@@ -24,6 +24,8 @@ from context_adapter.java_stats import (
     get_error_budget_status
 )
 from context_adapter.memory_adapter import fetch_behavior_service_memory, transform_behavior_memory, fetch_patterns_by_intent
+from context_adapter.alret_count import fetch_alerts_for_orchestrator
+from context_adapter.change_pre_post import fetch_change_impact_for_orchestrator
 from utils.service_matcher import ServiceMatcher
 from llm_response_generator import LLMResponseGenerator
 
@@ -175,6 +177,27 @@ class SLOOrchestrator:
                 print("   ✅ ClickHouse data retrieved\n")
             else:
                 print("   ⚠️  ClickHouse returned no data\n")
+
+        # Fetch from Alerts Count API (always fetch regardless of intent)
+        print("   → Fetching from Alerts Count API...")
+        alerts_data = self._fetch_alerts_count(
+            start_time_ms=str(start_time),
+            end_time_ms=str(end_time)
+        )
+        if alerts_data:
+            adapter_data['alerts_count'] = alerts_data
+            print("   ✅ Alerts Count data retrieved\n")
+        else:
+            print("   ⚠️  Alerts Count API returned no data\n")
+
+        # Fetch from Change Impact API (always fetch regardless of intent)
+        print("   → Fetching from Change Impact API (pre/post deviations)...")
+        change_impact_data = self._fetch_change_impact()
+        if change_impact_data:
+            adapter_data['change_impact'] = change_impact_data
+            print("   ✅ Change Impact data retrieved\n")
+        else:
+            print("   ⚠️  Change Impact API returned no data\n")
 
         # Note: postgres and opensearch adapters not yet implemented
         if 'postgres' in data_sources:
@@ -417,6 +440,50 @@ class SLOOrchestrator:
 
         except Exception as e:
             print(f"   ✗ Error fetching ClickHouse data: {e}")
+            return None
+
+    def _fetch_alerts_count(
+        self,
+        start_time_ms: str,
+        end_time_ms: str
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Fetch alerts count data from alerts-action API
+
+        Args:
+            start_time_ms: Start time in milliseconds (string)
+            end_time_ms: End time in milliseconds (string)
+
+        Returns:
+            Alerts count data or None if failed
+        """
+        try:
+            return fetch_alerts_for_orchestrator(
+                start_time_ms=start_time_ms,
+                end_time_ms=end_time_ms,
+                app_id=self.app_id,
+                username=self.java_stats_username,
+                password=self.java_stats_password
+            )
+        except Exception as e:
+            print(f"   ✗ Error fetching alerts count: {e}")
+            return None
+
+    def _fetch_change_impact(self) -> Optional[Dict[str, Any]]:
+        """
+        Fetch latest change and its impact (pre/post deviations)
+
+        Returns:
+            Change impact data or None if failed
+        """
+        try:
+            return fetch_change_impact_for_orchestrator(
+                application_id=self.app_id,
+                username=self.java_stats_username,
+                password=self.java_stats_password
+            )
+        except Exception as e:
+            print(f"   ✗ Error fetching change impact: {e}")
             return None
 
     def export_to_json(self, result: Dict[str, Any], filepath: str):

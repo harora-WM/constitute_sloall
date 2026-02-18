@@ -460,6 +460,46 @@ Triggered by Intents: {', '.join(clickhouse.get('triggered_by_intents', []))}
 
 """
 
+        # Add Alerts Count data if available
+        if 'alerts_count' in data:
+            alerts_count = data['alerts_count']
+            prompt += f"""## Alerts Count (Alert Actions)
+
+This shows the count of alert actions triggered during the time period.
+
+Query Parameters:
+{json.dumps(alerts_count.get('query', {}), indent=2)}
+
+Alerts Count:
+{json.dumps(alerts_count.get('alerts_count'), indent=2)}
+
+Fetched At: {alerts_count.get('fetched_at', 'N/A')}
+
+"""
+
+        # Add Change Impact data if available
+        if 'change_impact' in data:
+            change_impact = data['change_impact']
+            prompt += f"""## Change Impact (Pre/Post Release Deviations)
+
+This shows the latest release/change and its impact on services (comparing pre and post periods).
+
+Latest Change:
+{json.dumps(change_impact.get('latest_change', {}), indent=2)}
+
+Error Budget Deviations:
+- Top 5 Positive (Improved): {json.dumps(change_impact.get('eb_deviations', {}).get('top_5_positive', []), indent=2)}
+- Top 5 Negative (Degraded): {json.dumps(change_impact.get('eb_deviations', {}).get('top_5_negative', []), indent=2)}
+
+Response Time Deviations:
+- Top 5 Positive (Improved): {json.dumps(change_impact.get('response_deviations', {}).get('top_5_positive', []), indent=2)}
+- Top 5 Negative (Degraded): {json.dumps(change_impact.get('response_deviations', {}).get('top_5_negative', []), indent=2)}
+
+Statistics:
+{json.dumps(change_impact.get('stats', {}), indent=2)}
+
+"""
+
         # Add instruction for response
         prompt += """
 # Your Task
