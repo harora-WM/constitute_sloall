@@ -25,6 +25,7 @@ from context_adapter.java_stats import (
 )
 from context_adapter.memory_adapter import fetch_behavior_service_memory, transform_behavior_memory, fetch_patterns_by_intent
 from utils.service_matcher import ServiceMatcher
+from llm_response_generator import LLMResponseGenerator
 
 
 class SLOOrchestrator:
@@ -48,10 +49,15 @@ class SLOOrchestrator:
         print("Initializing Service Matcher...")
         try:
             self.service_matcher = ServiceMatcher("services.yaml")
-            print(f"✅ Service Matcher ready ({len(self.service_matcher.services_by_id)} services loaded)\n")
+            print(f"✅ Service Matcher ready ({len(self.service_matcher.services_by_id)} services loaded)")
         except FileNotFoundError:
-            print("⚠️  services.yaml not found - service matching disabled\n")
+            print("⚠️  services.yaml not found - service matching disabled")
             self.service_matcher = None
+
+        # Initialize LLM response generator
+        print("Initializing LLM Response Generator...")
+        self.response_generator = LLMResponseGenerator()
+        print("✅ LLM Response Generator ready\n")
 
         # Configuration - can be moved to .env or config file
         self.app_id = 31854  # Default application ID
@@ -145,6 +151,7 @@ class SLOOrchestrator:
                 end_time_ms=str(end_time),
                 index=index,
                 intents=all_intents,
+                primary_intent=classification_result.get('primary_intent'),
                 service_id=service_id
             )
             if java_data:
@@ -209,6 +216,16 @@ class SLOOrchestrator:
         print(f"\nData sources fetched: {', '.join(adapter_data.keys())}")
         print(f"Total data keys: {len(adapter_data)}\n")
 
+        # Step 4: Generate conversational response using LLM
+        conversational_result = self.response_generator.generate_response(
+            user_query=user_query,
+            orchestrator_output=result
+        )
+
+        # Add conversational response to result
+        result["conversational_response"] = conversational_result.get("response", "")
+        result["response_metadata"] = conversational_result.get("metadata", {})
+
         return result
 
     def _fetch_java_stats(
@@ -217,21 +234,23 @@ class SLOOrchestrator:
         end_time_ms: str,
         index: str,
         intents: Optional[set] = None,
+        primary_intent: Optional[str] = None,
         service_id: Optional[int] = None
     ) -> Optional[Dict[str, Any]]:
         """
         Fetch data from Java Stats API (Watermelon API) with intent-based routing.
 
         Routes to specific functions based on intent:
-        - CURRENT_HEALTH: Application-wide health across all services
+        - CURRENT_HEALTH: Application-wide health across all services (returns 4 arrays)
         - SERVICE_HEALTH: Health for a specific service (requires service_id)
-        - ERROR_BUDGET_STATUS: Error budget data (EB category only)
+        - ERROR_BUDGET_STATUS: Error budget data (EB category only, returns 3 arrays)
 
         Args:
             start_time_ms: Start time in milliseconds (string)
             end_time_ms: End time in milliseconds (string)
             index: Time granularity (HOURLY, DAILY, etc.)
             intents: Set of all intents (primary + secondary + enriched)
+            primary_intent: The primary intent from classification (takes precedence)
             service_id: Optional service ID for service-specific queries
 
         Returns:
@@ -240,10 +259,11 @@ class SLOOrchestrator:
         try:
             # Intent-based routing
             if intents:
-                # Priority order: SERVICE_HEALTH > ERROR_BUDGET_STATUS > CURRENT_HEALTH
+                # Strategy: Check primary intent first to respect user's main question,
+                # then fall back to priority order for secondary/enriched intents
 
-                # SERVICE_HEALTH - requires service_id
-                if "SERVICE_HEALTH" in intents:
+                # First: Check if primary intent matches our supported intents
+                if primary_intent == "SERVICE_HEALTH":
                     return get_service_health(
                         app_id=self.app_id,
                         start_time=start_time_ms,
@@ -253,9 +273,16 @@ class SLOOrchestrator:
                         username=self.java_stats_username,
                         password=self.java_stats_password
                     )
-
-                # ERROR_BUDGET_STATUS - can work with or without service_id
-                elif "ERROR_BUDGET_STATUS" in intents:
+                elif primary_intent == "CURRENT_HEALTH":
+                    return get_current_health(
+                        app_id=self.app_id,
+                        start_time=start_time_ms,
+                        end_time=end_time_ms,
+                        index=index,
+                        username=self.java_stats_username,
+                        password=self.java_stats_password
+                    )
+                elif primary_intent == "ERROR_BUDGET_STATUS":
                     return get_error_budget_status(
                         app_id=self.app_id,
                         start_time=start_time_ms,
@@ -266,7 +293,28 @@ class SLOOrchestrator:
                         service_id=service_id
                     )
 
-                # CURRENT_HEALTH - application-wide
+                # Fallback: Use priority order for secondary/enriched intents
+                # Priority order: SERVICE_HEALTH > ERROR_BUDGET_STATUS > CURRENT_HEALTH
+                elif "SERVICE_HEALTH" in intents:
+                    return get_service_health(
+                        app_id=self.app_id,
+                        start_time=start_time_ms,
+                        end_time=end_time_ms,
+                        service_id=service_id,
+                        index=index,
+                        username=self.java_stats_username,
+                        password=self.java_stats_password
+                    )
+                elif "ERROR_BUDGET_STATUS" in intents:
+                    return get_error_budget_status(
+                        app_id=self.app_id,
+                        start_time=start_time_ms,
+                        end_time=end_time_ms,
+                        index=index,
+                        username=self.java_stats_username,
+                        password=self.java_stats_password,
+                        service_id=service_id
+                    )
                 elif "CURRENT_HEALTH" in intents:
                     return get_current_health(
                         app_id=self.app_id,
@@ -438,9 +486,20 @@ def main():
             result = orchestrator.process_query(user_input)
             last_result = result
 
-            # Print summary
+            # Print conversational response prominently
             if result.get('success'):
-                print("\n📋 Result Summary:")
+                # Display the conversational response
+                print("\n" + "="*80)
+                print("💬 CONVERSATIONAL RESPONSE")
+                print("="*80)
+                print()
+                print(result.get('conversational_response', 'No response generated'))
+                print()
+
+                # Print technical summary for reference
+                print("="*80)
+                print("📋 Technical Summary")
+                print("="*80)
                 print(f"   Primary Intent: {result['classification']['primary_intent']}")
                 print(f"   Data Sources Used: {', '.join(result['data_sources_used'])}")
 
@@ -451,6 +510,12 @@ def main():
                         print(f"\n   {source.upper()} Stats:")
                         for key, value in stats.items():
                             print(f"      • {key}: {value}")
+
+                # Auto-export result to JSON
+                print()
+                timestamp = int(result['time_resolution']['start_time'])
+                filename = f"slo_result_{timestamp}.json"
+                orchestrator.export_to_json(result, filename)
             else:
                 print(f"\n❌ Error: {result.get('error')}")
 

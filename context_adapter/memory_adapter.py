@@ -1,14 +1,13 @@
 """
 Service Behavior Memory Adapter
 Fetches Service's behavioral patterns from ClickHouse for specific application and service within time range
-Includes intent-based routing for pattern-specific queries
+Returns all patterns from ai_service_behavior_memory table without intent-based filtering
 """
 
 import json
 import requests
 from typing import Dict, List, Any, Optional, Set
 from datetime import datetime
-from .intent_based_queries import dispatch_intent_query
 
 
 # -------------------------------------------------------------------
@@ -42,28 +41,26 @@ def fetch_behavior_service_memory(
     """
     Fetch behavior service memory records from ClickHouse for specific application and service
 
+    Note: start_time and end_time are kept for backward compatibility but NOT used in filtering.
+    This function returns ALL behavior patterns for the application regardless of time range.
+
     Args:
-        start_time: Start time in Unix milliseconds
-        end_time: End time in Unix milliseconds
+        start_time: Start time in Unix milliseconds (not used for filtering)
+        end_time: End time in Unix milliseconds (not used for filtering)
         app_id: Application ID
         sid: Service name (optional - if None, fetches all services for the app)
 
     Returns:
-        List of behavior memory records
+        List of ALL behavior memory records for the application
     """
 
     clickhouse_url = "http://ec2-47-129-241-41.ap-southeast-1.compute.amazonaws.com:8123"
     auth = ("wm_test", "Watermelon@123")
 
-    # Convert milliseconds to datetime strings
-    start_dt = ms_to_datetime_str(start_time)
-    end_dt = ms_to_datetime_str(end_time)
-
-    # Build WHERE clause based on whether service is specified
+    # Build WHERE clause - only filter by app_id and optionally service
+    # NO time-based filtering - returns all historical patterns
     where_clause = f"""
     WHERE application_id = {app_id}
-      AND detected_at >= toDateTime('{start_dt}')
-      AND detected_at <= toDateTime('{end_dt}')
     """
 
     if sid:
@@ -258,9 +255,11 @@ def fetch_patterns_by_intent(
     incident_timestamp: Optional[int] = None
 ) -> Dict[str, Any]:
     """
-    Orchestrator-facing function that routes to appropriate intent-based queries
+    Orchestrator-facing function that fetches ALL behavior memory data
 
-    This function analyzes the intents and calls the appropriate pattern query functions
+    Simplified to return all patterns from ai_service_behavior_memory table
+    regardless of specific intents. This provides complete context to the LLM
+    without filtering by pattern types.
 
     Args:
         intents: Set of intent names (primary, secondary, enriched combined)
@@ -269,70 +268,23 @@ def fetch_patterns_by_intent(
         app_id: Application ID
         service_id: Optional service ID (resolved from service name)
         service_name: Optional service name (raw from intent classifier)
-        incident_timestamp: Optional incident timestamp for RECURRING_INCIDENT
+        incident_timestamp: Optional incident timestamp (currently not used)
 
     Returns:
-        Dictionary with results from all applicable intent queries
+        Dictionary with all behavior memory patterns in the time range
     """
-    # Pattern-related intents that require specialized queries
-    PATTERN_INTENTS = {
-        "UNDERCURRENTS_TREND",
-        "CAPACITY_RISK",
-        "SEASONALITY_PATTERN",
-        "TIME_WINDOW_ANOMALY",
-        "RECURRING_INCIDENT",
-        "HISTORICAL_COMPARISON",
-        "RISK_PREDICTION"
-    }
+    print("   Fetching all behavior patterns from ai_service_behavior_memory")
 
-    # Find which pattern intents are present
-    intents_to_query = set(intents).intersection(PATTERN_INTENTS)
+    # Fetch all behavior memory records for the given time range and app_id
+    rows = fetch_behavior_service_memory(start_time, end_time, app_id, service_name)
 
-    if not intents_to_query:
-        # No pattern intents, use general fetch
-        print("   No pattern-specific intents detected, using general query")
-        rows = fetch_behavior_service_memory(start_time, end_time, app_id, service_name)
-        return transform_behavior_memory(rows, start_time, end_time, app_id, service_name)
+    # Transform to LLM-ready format
+    result = transform_behavior_memory(rows, start_time, end_time, app_id, service_name)
 
-    # Execute intent-specific queries
-    print(f"   Pattern intents detected: {', '.join(intents_to_query)}")
+    # Add metadata about which intents triggered this fetch
+    result["triggered_by_intents"] = list(intents) if intents else []
 
-    results = {
-        "intents_queried": list(intents_to_query),
-        "intent_results": {}
-    }
-
-    for intent in intents_to_query:
-        print(f"   → Querying {intent}...")
-
-        try:
-            result = dispatch_intent_query(
-                intent=intent,
-                start_time=start_time,
-                end_time=end_time,
-                app_id=app_id,
-                service_id=service_id,
-                service_name=service_name,
-                incident_timestamp=incident_timestamp
-            )
-
-            results["intent_results"][intent] = result
-
-            # Print summary
-            if result.get('status') == 'under_progress':
-                print(f"      {result.get('message')}")
-            else:
-                record_count = result.get('total_records', 0)
-                print(f"      Found {record_count} records")
-
-        except Exception as e:
-            print(f"      Error querying {intent}: {e}")
-            results["intent_results"][intent] = {
-                "error": str(e),
-                "intent": intent
-            }
-
-    return results
+    return result
 
 
 # -------------------------------------------------------------------
