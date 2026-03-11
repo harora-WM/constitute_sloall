@@ -2,16 +2,21 @@
 Script to get the latest change and fetch top 5 services with deviations.
 Combines functionality from changes.py and deviation.py.
 """
+import os
+import sys
 import requests
 import json
 from typing import Optional, Dict, Any
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import config
 
 
 def get_access_token(
     username: str,
     password: str,
-    keycloak_url: str = "https://wm-sandbox-auth-1.watermelon.us/realms/watermelon/protocol/openid-connect/token",
-    client_id: str = "web_app"
+    keycloak_url: str = config.KEYCLOAK_URL,
+    client_id: str = config.KEYCLOAK_CLIENT_ID
 ) -> Optional[str]:
     """
     Get access token from Keycloak authentication endpoint.
@@ -72,7 +77,7 @@ def get_access_token(
         return None
 
 
-def get_latest_change(token: str, application_id: int = 31854) -> Optional[Dict[str, Any]]:
+def get_latest_change(token: str, application_id: int = config.APP_ID) -> Optional[Dict[str, Any]]:
     """
     Get the latest change from release-histories API.
 
@@ -83,7 +88,7 @@ def get_latest_change(token: str, application_id: int = 31854) -> Optional[Dict[
     Returns:
         Latest change data if successful, None otherwise
     """
-    url = f"https://wm-sandbox-1.watermelon.us/services/wmebonboarding/api/release-histories/application/{application_id}"
+    url = f"{config.RELEASE_HISTORIES_API_URL}/{application_id}"
     headers = {
         'Authorization': f'Bearer {token}'
     }
@@ -117,7 +122,7 @@ def get_latest_change(token: str, application_id: int = 31854) -> Optional[Dict[
         return None
 
 
-def get_top_5_eb_deviations(token: str, release_time_millis: int, application_id: int = 31854, sort_order: str = "DESC") -> Optional[Dict[str, Any]]:
+def get_top_5_eb_deviations(token: str, release_time_millis: int, application_id: int = config.APP_ID, sort_order: str = "DESC") -> Optional[Dict[str, Any]]:
     """
     Get top 5 services with EB (Error Budget) deviations for a specific release time.
 
@@ -130,14 +135,14 @@ def get_top_5_eb_deviations(token: str, release_time_millis: int, application_id
     Returns:
         Top 5 EB deviations data if successful, None otherwise
     """
-    url = f"https://wm-sandbox-1.watermelon.us/services/wmerrorbudgetstatisticsservice/api/release-impact/transactions/top-5/POST?priority=DEVIATION&sort={sort_order}"
+    url = f"{config.RELEASE_IMPACT_API_URL}?priority=DEVIATION&sort={sort_order}"
 
     params = {
         "applicationId": application_id,
-        "postPeriod": "DAY",
-        "postPeriodDuration": 18,
-        "prePeriod": "DAY",
-        "prePeriodDuration": 15,
+        "postPeriod": config.CHANGE_POST_PERIOD,
+        "postPeriodDuration": config.CHANGE_POST_PERIOD_DURATION,
+        "prePeriod": config.CHANGE_PRE_PERIOD,
+        "prePeriodDuration": config.CHANGE_PRE_PERIOD_DURATION,
         "queryBy": "EB",
         "releaseTime": release_time_millis
     }
@@ -174,7 +179,7 @@ def get_top_5_eb_deviations(token: str, release_time_millis: int, application_id
         return None
 
 
-def get_top_5_response_deviations(token: str, release_time_millis: int, application_id: int = 31854, sort_order: str = "DESC") -> Optional[Dict[str, Any]]:
+def get_top_5_response_deviations(token: str, release_time_millis: int, application_id: int = config.APP_ID, sort_order: str = "DESC") -> Optional[Dict[str, Any]]:
     """
     Get top 5 services with RESPONSE deviations for a specific release time.
 
@@ -187,14 +192,14 @@ def get_top_5_response_deviations(token: str, release_time_millis: int, applicat
     Returns:
         Top 5 RESPONSE deviations data if successful, None otherwise
     """
-    url = f"https://wm-sandbox-1.watermelon.us/services/wmerrorbudgetstatisticsservice/api/release-impact/transactions/top-5/POST?priority=DEVIATION&sort={sort_order}"
+    url = f"{config.RELEASE_IMPACT_API_URL}?priority=DEVIATION&sort={sort_order}"
 
     params = {
         "applicationId": application_id,
-        "postPeriod": "DAY",
-        "postPeriodDuration": 18,
-        "prePeriod": "DAY",
-        "prePeriodDuration": 15,
+        "postPeriod": config.CHANGE_POST_PERIOD,
+        "postPeriodDuration": config.CHANGE_POST_PERIOD_DURATION,
+        "prePeriod": config.CHANGE_PRE_PERIOD,
+        "prePeriodDuration": config.CHANGE_PRE_PERIOD_DURATION,
         "queryBy": "RESPONSE",
         "releaseTime": release_time_millis
     }
@@ -232,15 +237,15 @@ def get_top_5_response_deviations(token: str, release_time_millis: int, applicat
 
 
 def fetch_change_impact_for_orchestrator(
-    application_id: int = 31854,
-    username: str = "wmadmin",
-    password: str = "WM@Dm1n@#2024!!$"
+    application_id: int = config.APP_ID,
+    username: str = config.USERNAME,
+    password: str = config.PASSWORD
 ) -> Optional[Dict[str, Any]]:
     """
     Fetch latest change and its impact (pre/post deviations) for orchestrator integration.
 
     Args:
-        application_id: Application ID (default: 31854)
+        application_id: Application ID (default: from config)
         username: Keycloak username
         password: Keycloak password
 
@@ -299,9 +304,9 @@ if __name__ == "__main__":
     print("Top 5 Deviation Services for Latest Change")
     print("=" * 70)
 
-    # Hardcoded credentials
-    username = "wmadmin"
-    password = "WM@Dm1n@#2024!!$"
+    # Credentials from config
+    username = config.USERNAME
+    password = config.PASSWORD
 
     # Step 1: Get access token
     print("\n[Step 1] Getting Access Token...")

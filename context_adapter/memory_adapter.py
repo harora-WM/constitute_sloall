@@ -4,10 +4,15 @@ Fetches Service's behavioral patterns from ClickHouse for specific application a
 Returns all patterns from ai_service_behavior_memory table without intent-based filtering
 """
 
+import os
+import sys
 import json
 import requests
 from typing import Dict, List, Any, Optional, Set
 from datetime import datetime
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import config
 
 
 # -------------------------------------------------------------------
@@ -54,8 +59,8 @@ def fetch_behavior_service_memory(
         List of ALL behavior memory records for the application
     """
 
-    clickhouse_url = "http://ec2-47-129-241-41.ap-southeast-1.compute.amazonaws.com:8123"
-    auth = ("wm_test", "Watermelon@123")
+    clickhouse_url = config.CLICKHOUSE_URL
+    auth = (config.CLICKHOUSE_USERNAME, config.CLICKHOUSE_PASSWORD)
 
     # Build WHERE clause - only filter by app_id and optionally service
     # NO time-based filtering - returns all historical patterns
@@ -96,7 +101,7 @@ def fetch_behavior_service_memory(
             auth=auth,
             params={
                 "query": query.strip(),
-                "database": "metrics"
+                "database": config.CLICKHOUSE_DATABASE
             },
             timeout=30
         )

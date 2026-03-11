@@ -3,18 +3,23 @@ Transform Watermelon API response to LLM-ready format.
 Combines EB and RESPONSE data categories per service.
 Fetches data directly from API.
 """
+import os
+import sys
 import json
 import requests
 import urllib3
 from typing import Dict, List, Any, Optional
 from datetime import datetime
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import config
+
 
 def get_access_token(
     username: str,
     password: str,
-    keycloak_url: str = "https://wm-sandbox-auth-1.watermelon.us/realms/watermelon/protocol/openid-connect/token",
-    client_id: str = "web_app"
+    keycloak_url: str = config.KEYCLOAK_URL,
+    client_id: str = config.KEYCLOAK_CLIENT_ID
 ) -> Optional[str]:
     """
     Get access token from Keycloak authentication endpoint.
@@ -74,7 +79,8 @@ def fetch_api_data(
     username: str,
     password: str,
     application_id: int,
-    index: str
+    index: str,
+    project_id: int = config.PROJECT_ID
 ) -> Optional[List[Dict]]:
     """
     Fetch transaction data directly from Watermelon API.
@@ -86,6 +92,7 @@ def fetch_api_data(
         password: Keycloak password
         application_id: Application ID (e.g., 31854 for WMPlatform)
         index: Time granularity (options: 'HOURLY', 'DAILY', 'WEEKLY', 'MONTHLY')
+        project_id: Project ID (e.g., 215853)
 
     Returns:
         List of transaction records if successful, None otherwise
@@ -96,11 +103,12 @@ def fetch_api_data(
         return None
 
     # API endpoint and parameters
-    transactions_url = "https://wm-sandbox-1.watermelon.us/services/wmerrorbudgetstatisticsservice/api/transactions/distinct/top-5/ALL"
+    transactions_url = config.JAVA_STATS_API_URL
     params = {
         'application_id': application_id,
+        'project_id': project_id,
         'page_id': 0,
-        'page_size': 2000,
+        'page_size': config.JAVA_STATS_PAGE_SIZE,
         'range': 'CUSTOM',
         'index': index,
         'start_time': start_time_ms,
@@ -286,7 +294,8 @@ def get_current_health(
     end_time: str,
     index: str,
     username: str,
-    password: str
+    password: str,
+    project_id: int = config.PROJECT_ID
 ) -> Optional[Dict[str, Any]]:
     """
     CURRENT_HEALTH intent handler.
@@ -299,6 +308,7 @@ def get_current_health(
         index: Time granularity (HOURLY, DAILY, WEEKLY, MONTHLY)
         username: Keycloak username
         password: Keycloak password
+        project_id: Project ID (e.g., 215853)
 
     Returns:
         Dictionary with 4 arrays (unhealthy_services_eb, at_risk_services_eb,
@@ -314,7 +324,8 @@ def get_current_health(
         username=username,
         password=password,
         application_id=app_id,
-        index=index
+        index=index,
+        project_id=project_id
     )
 
     if not raw_data:
@@ -335,7 +346,8 @@ def get_service_health(
     service_id: Optional[int],
     index: str,
     username: str,
-    password: str
+    password: str,
+    project_id: int = config.PROJECT_ID
 ) -> Optional[Dict[str, Any]]:
     """
     SERVICE_HEALTH intent handler.
@@ -349,6 +361,7 @@ def get_service_health(
         index: Time granularity (HOURLY, DAILY, WEEKLY, MONTHLY)
         username: Keycloak username
         password: Keycloak password
+        project_id: Project ID (e.g., 215853)
 
     Returns:
         Dictionary with health data filtered for the specific service,
@@ -368,7 +381,8 @@ def get_service_health(
         username=username,
         password=password,
         application_id=app_id,
-        index=index
+        index=index,
+        project_id=project_id
     )
 
     if not raw_data:
@@ -415,7 +429,8 @@ def get_error_budget_status(
     index: str,
     username: str,
     password: str,
-    service_id: Optional[int] = None
+    service_id: Optional[int] = None,
+    project_id: int = config.PROJECT_ID
 ) -> Optional[Dict[str, Any]]:
     """
     ERROR_BUDGET_STATUS intent handler.
@@ -429,6 +444,7 @@ def get_error_budget_status(
         username: Keycloak username
         password: Keycloak password
         service_id: Optional service ID to filter by specific service
+        project_id: Project ID (e.g., 215853)
 
     Returns:
         Dictionary with error budget data (EB category only),
@@ -446,7 +462,8 @@ def get_error_budget_status(
         username=username,
         password=password,
         application_id=app_id,
-        index=index
+        index=index,
+        project_id=project_id
     )
 
     if not raw_data:
@@ -529,9 +546,10 @@ if __name__ == "__main__":
     print("=" * 50)
 
     # Configuration parameters
-    username = "wmadmin"
-    password = "WM@Dm1n@#2024!!$"
-    application_id = 31854
+    username = config.USERNAME
+    password = config.PASSWORD
+    application_id = config.APP_ID
+    project_id = config.PROJECT_ID
     index = 'DAILY'
 
     # Time range (Unix timestamps in milliseconds)
@@ -546,7 +564,8 @@ if __name__ == "__main__":
         username,
         password,
         application_id,
-        index
+        index,
+        project_id
     )
 
     if not raw_data:
@@ -591,7 +610,8 @@ if __name__ == "__main__":
         end_time=end_time,
         index=index,
         username=username,
-        password=password
+        password=password,
+        project_id=project_id
     )
     if current_health:
         print(f"   Total services: {current_health['stats']['total_slos']}")
@@ -607,7 +627,8 @@ if __name__ == "__main__":
             service_id=test_service_id,
             index=index,
             username=username,
-            password=password
+            password=password,
+            project_id=project_id
         )
         if service_health:
             print(f"   Service {test_service_id}: {service_health['stats']['total_slos']} records")
@@ -621,7 +642,8 @@ if __name__ == "__main__":
         service_id=None,
         index=index,
         username=username,
-        password=password
+        password=password,
+        project_id=project_id
     )
     print(f"   Result: {service_health_none}")
 
@@ -633,7 +655,8 @@ if __name__ == "__main__":
         end_time=end_time,
         index=index,
         username=username,
-        password=password
+        password=password,
+        project_id=project_id
     )
     if eb_status:
         print(f"   Total EB services: {eb_status['stats']['total_eb_slos']}")
@@ -649,7 +672,8 @@ if __name__ == "__main__":
             index=index,
             username=username,
             password=password,
-            service_id=test_service_id
+            service_id=test_service_id,
+            project_id=project_id
         )
         if eb_status_service:
             print(f"   Service {test_service_id} EB: {eb_status_service['stats']['total_eb_slos']} records")

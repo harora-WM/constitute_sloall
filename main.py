@@ -7,8 +7,17 @@ Coordinates intent classification and data fetching from multiple adapters
 import os
 import sys
 import json
+import logging
+import traceback
+from contextlib import asynccontextmanager
 from typing import Dict, List, Any, Optional
 from dotenv import load_dotenv
+import uvicorn
+from fastapi import FastAPI, HTTPException, Request, status
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from api_models import QueryRequest, QueryResponse, ErrorResponse, HealthResponse
+import config
 
 # Add project directories to path for imports
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -61,18 +70,18 @@ class SLOOrchestrator:
         self.response_generator = LLMResponseGenerator()
         print("✅ LLM Response Generator ready\n")
 
-        # Configuration - can be moved to .env or config file
-        self.app_id = 31854  # Default application ID
-        self.java_stats_username = os.getenv('JAVA_STATS_USERNAME', 'wmadmin')
-        self.java_stats_password = os.getenv('JAVA_STATS_PASSWORD', 'WM@Dm1n@#2024!!$')
+        # Configuration from .env via config module
+        self.app_id = config.APP_ID
+        self.project_id = config.PROJECT_ID
+        self.java_stats_username = config.USERNAME
+        self.java_stats_password = config.PASSWORD
 
-    def process_query(self, user_query: str, service_name: Optional[str] = None) -> Dict[str, Any]:
+    def process_query(self, user_query: str, app_id: int = None, project_id: int = None) -> Dict[str, Any]:
         """
         Process a user query end-to-end
 
         Args:
             user_query: Natural language query from user
-            service_name: Optional service name override (if not extracted from query)
 
         Returns:
             Dictionary containing:
@@ -80,6 +89,9 @@ class SLOOrchestrator:
             - data: Aggregated data from all adapters
             - metadata: Processing metadata
         """
+        effective_app_id = app_id if app_id is not None else self.app_id
+        effective_project_id = project_id if project_id is not None else self.project_id
+
         print("="*80)
         print("SLO ORCHESTRATOR - Processing Query")
         print("="*80)
@@ -101,7 +113,7 @@ class SLOOrchestrator:
 
         # Step 2: Extract parameters
         entities = classification_result.get('entities', {})
-        service = service_name or entities.get('service')
+        service = entities.get('service')
         data_sources = classification_result.get('data_sources', [])
         timestamp_resolution = classification_result.get('timestamp_resolution', {})
 
@@ -152,6 +164,8 @@ class SLOOrchestrator:
                 start_time_ms=str(start_time),
                 end_time_ms=str(end_time),
                 index=index,
+                app_id=effective_app_id,
+                project_id=effective_project_id,
                 intents=all_intents,
                 primary_intent=classification_result.get('primary_intent'),
                 service_id=service_id
@@ -168,6 +182,7 @@ class SLOOrchestrator:
             memory_data = self._fetch_memory_adapter(
                 start_time=start_time,
                 end_time=end_time,
+                app_id=effective_app_id,
                 service_name=service,
                 intents=all_intents,
                 incident_timestamp=None  # Could extract from entities if needed
@@ -182,7 +197,8 @@ class SLOOrchestrator:
         print("   → Fetching from Alerts Count API...")
         alerts_data = self._fetch_alerts_count(
             start_time_ms=str(start_time),
-            end_time_ms=str(end_time)
+            end_time_ms=str(end_time),
+            app_id=effective_app_id
         )
         if alerts_data:
             adapter_data['alerts_count'] = alerts_data
@@ -192,7 +208,7 @@ class SLOOrchestrator:
 
         # Fetch from Change Impact API (always fetch regardless of intent)
         print("   → Fetching from Change Impact API (pre/post deviations)...")
-        change_impact_data = self._fetch_change_impact()
+        change_impact_data = self._fetch_change_impact(app_id=effective_app_id)
         if change_impact_data:
             adapter_data['change_impact'] = change_impact_data
             print("   ✅ Change Impact data retrieved\n")
@@ -227,7 +243,8 @@ class SLOOrchestrator:
             "data_sources_used": list(adapter_data.keys()),
             "data": adapter_data,
             "metadata": {
-                "app_id": self.app_id,
+                "app_id": effective_app_id,
+                "project_id": effective_project_id,
                 "service": service,
                 "enrichment_applied": bool(classification_result.get('enrichment_details'))
             }
@@ -256,6 +273,8 @@ class SLOOrchestrator:
         start_time_ms: str,
         end_time_ms: str,
         index: str,
+        app_id: int,
+        project_id: int,
         intents: Optional[set] = None,
         primary_intent: Optional[str] = None,
         service_id: Optional[int] = None
@@ -288,64 +307,70 @@ class SLOOrchestrator:
                 # First: Check if primary intent matches our supported intents
                 if primary_intent == "SERVICE_HEALTH":
                     return get_service_health(
-                        app_id=self.app_id,
+                        app_id=app_id,
                         start_time=start_time_ms,
                         end_time=end_time_ms,
                         service_id=service_id,
                         index=index,
                         username=self.java_stats_username,
-                        password=self.java_stats_password
+                        password=self.java_stats_password,
+                        project_id=project_id
                     )
                 elif primary_intent == "CURRENT_HEALTH":
                     return get_current_health(
-                        app_id=self.app_id,
-                        start_time=start_time_ms,
-                        end_time=end_time_ms,
-                        index=index,
-                        username=self.java_stats_username,
-                        password=self.java_stats_password
-                    )
-                elif primary_intent == "ERROR_BUDGET_STATUS":
-                    return get_error_budget_status(
-                        app_id=self.app_id,
+                        app_id=app_id,
                         start_time=start_time_ms,
                         end_time=end_time_ms,
                         index=index,
                         username=self.java_stats_username,
                         password=self.java_stats_password,
-                        service_id=service_id
+                        project_id=project_id
+                    )
+                elif primary_intent == "ERROR_BUDGET_STATUS":
+                    return get_error_budget_status(
+                        app_id=app_id,
+                        start_time=start_time_ms,
+                        end_time=end_time_ms,
+                        index=index,
+                        username=self.java_stats_username,
+                        password=self.java_stats_password,
+                        service_id=service_id,
+                        project_id=project_id
                     )
 
                 # Fallback: Use priority order for secondary/enriched intents
                 # Priority order: SERVICE_HEALTH > ERROR_BUDGET_STATUS > CURRENT_HEALTH
                 elif "SERVICE_HEALTH" in intents:
                     return get_service_health(
-                        app_id=self.app_id,
+                        app_id=app_id,
                         start_time=start_time_ms,
                         end_time=end_time_ms,
                         service_id=service_id,
                         index=index,
                         username=self.java_stats_username,
-                        password=self.java_stats_password
+                        password=self.java_stats_password,
+                        project_id=project_id
                     )
                 elif "ERROR_BUDGET_STATUS" in intents:
                     return get_error_budget_status(
-                        app_id=self.app_id,
+                        app_id=app_id,
                         start_time=start_time_ms,
                         end_time=end_time_ms,
                         index=index,
                         username=self.java_stats_username,
                         password=self.java_stats_password,
-                        service_id=service_id
+                        service_id=service_id,
+                        project_id=project_id
                     )
                 elif "CURRENT_HEALTH" in intents:
                     return get_current_health(
-                        app_id=self.app_id,
+                        app_id=app_id,
                         start_time=start_time_ms,
                         end_time=end_time_ms,
                         index=index,
                         username=self.java_stats_username,
-                        password=self.java_stats_password
+                        password=self.java_stats_password,
+                        project_id=project_id
                     )
 
             # Fallback: Use general fetch_api_data + transform (backward compatibility)
@@ -355,8 +380,9 @@ class SLOOrchestrator:
                 end_time_ms=end_time_ms,
                 username=self.java_stats_username,
                 password=self.java_stats_password,
-                application_id=self.app_id,
-                index=index
+                application_id=app_id,
+                index=index,
+                project_id=project_id
             )
 
             if not raw_data:
@@ -374,6 +400,7 @@ class SLOOrchestrator:
         self,
         start_time: int,
         end_time: int,
+        app_id: int,
         service_name: Optional[str] = None,
         intents: Optional[set] = None,
         incident_timestamp: Optional[int] = None
@@ -411,7 +438,7 @@ class SLOOrchestrator:
                     intents=intents,
                     start_time=start_time,
                     end_time=end_time,
-                    app_id=self.app_id,
+                    app_id=app_id,
                     service_id=service_id,
                     service_name=service_name,
                     incident_timestamp=incident_timestamp
@@ -422,7 +449,7 @@ class SLOOrchestrator:
                 raw_data = fetch_behavior_service_memory(
                     start_time=start_time,
                     end_time=end_time,
-                    app_id=self.app_id,
+                    app_id=app_id,
                     sid=service_name
                 )
 
@@ -433,7 +460,7 @@ class SLOOrchestrator:
                     rows=raw_data,
                     start_time=start_time,
                     end_time=end_time,
-                    app_id=self.app_id,
+                    app_id=app_id,
                     sid=service_name
                 )
                 return transformed
@@ -445,7 +472,8 @@ class SLOOrchestrator:
     def _fetch_alerts_count(
         self,
         start_time_ms: str,
-        end_time_ms: str
+        end_time_ms: str,
+        app_id: int
     ) -> Optional[Dict[str, Any]]:
         """
         Fetch alerts count data from alerts-action API
@@ -461,7 +489,7 @@ class SLOOrchestrator:
             return fetch_alerts_for_orchestrator(
                 start_time_ms=start_time_ms,
                 end_time_ms=end_time_ms,
-                app_id=self.app_id,
+                app_id=app_id,
                 username=self.java_stats_username,
                 password=self.java_stats_password
             )
@@ -469,7 +497,7 @@ class SLOOrchestrator:
             print(f"   ✗ Error fetching alerts count: {e}")
             return None
 
-    def _fetch_change_impact(self) -> Optional[Dict[str, Any]]:
+    def _fetch_change_impact(self, app_id: int) -> Optional[Dict[str, Any]]:
         """
         Fetch latest change and its impact (pre/post deviations)
 
@@ -478,7 +506,7 @@ class SLOOrchestrator:
         """
         try:
             return fetch_change_impact_for_orchestrator(
-                application_id=self.app_id,
+                application_id=app_id,
                 username=self.java_stats_username,
                 password=self.java_stats_password
             )
@@ -593,6 +621,113 @@ def main():
             print(f"\n❌ Error processing query: {e}")
             import traceback
             traceback.print_exc()
+
+
+# ── FastAPI Application ────────────────────────────────────────────────────────
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logger = logging.getLogger("slo_api")
+
+_orchestrator: Optional[SLOOrchestrator] = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global _orchestrator
+    logger.info("Initializing SLOOrchestrator...")
+    try:
+        _orchestrator = SLOOrchestrator()
+        logger.info("SLOOrchestrator ready")
+    except Exception as exc:
+        logger.error(f"Failed to initialize orchestrator: {exc}")
+        _orchestrator = None
+    yield
+    logger.info("Shutting down SLO API")
+
+
+app = FastAPI(
+    title="SLO Advisor API",
+    description="Internal API for conversational SLO queries powered by AWS Bedrock",
+    version="1.0.0",
+    lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
+)
+
+
+@app.exception_handler(Exception)
+async def generic_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Unhandled exception: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content=ErrorResponse(
+            error="Internal server error",
+            detail=traceback.format_exc()[-500:],
+        ).model_dump(),
+    )
+
+
+@app.get("/health", response_model=HealthResponse, tags=["ops"])
+def health_check():
+    """Liveness and readiness probe. Returns 503 if orchestrator failed to initialize."""
+    if _orchestrator is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Orchestrator not initialized — check startup logs",
+        )
+    services_count = (
+        len(_orchestrator.service_matcher.services_by_id)
+        if _orchestrator.service_matcher
+        else 0
+    )
+    return HealthResponse(
+        status="ok",
+        orchestrator_ready=True,
+        app_id=_orchestrator.app_id,
+        services_loaded=services_count,
+        model_id=_orchestrator.response_generator.model_id,
+    )
+
+
+@app.post(
+    "/query",
+    response_model=QueryResponse,
+    responses={
+        400: {"model": ErrorResponse},
+        503: {"model": ErrorResponse},
+        500: {"model": ErrorResponse},
+    },
+    tags=["slo"],
+)
+def run_query(body: QueryRequest):
+    """
+    Submit a natural language SLO query.
+
+    Returns intent classification, all adapter data, and a conversational response.
+    Typical latency: 8–15 seconds (two LLM calls + parallel data fetches).
+    """
+    if _orchestrator is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Orchestrator not initialized",
+        )
+    logger.info(f"Query: {body.query!r}, app_id={body.app_id}, project_id={body.project_id}")
+    result = _orchestrator.process_query(
+        user_query=body.query,
+        app_id=body.app_id,
+        project_id=body.project_id,
+    )
+    if not result.get("success"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=result.get("error", "Orchestrator returned failure"),
+        )
+    return result
 
 
 if __name__ == "__main__":

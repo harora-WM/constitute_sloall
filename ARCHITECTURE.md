@@ -16,7 +16,7 @@ A fully conversational SLO analysis system that uses AWS Bedrock Claude Sonnet 4
                                       ↓
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                            ORCHESTRATOR LAYER                                │
-│                           (orchestrator.py)                                  │
+│                           (main.py)                                  │
 └─────────────────────────────────────────────────────────────────────────────┘
                                       ↓
                     ┌─────────────────┴─────────────────┐
@@ -124,7 +124,7 @@ A fully conversational SLO analysis system that uses AWS Bedrock Claude Sonnet 4
 
 ## 🔧 Key Components
 
-### 1. Orchestrator (`orchestrator.py`)
+### 1. Orchestrator (`main.py`)
 **Role:** Main coordinator
 - Initializes all sub-components
 - Manages query processing pipeline
@@ -255,7 +255,7 @@ The LLM response generator receives:
 
 ```
 constitute_slo/
-├── orchestrator.py                      # Main coordinator
+├── main.py                      # Main coordinator
 ├── llm_response_generator.py           # NEW: Conversational response layer
 ├── intent_classifier/
 │   ├── intent_classifier.py            # Layer 1 LLM (intent)
@@ -280,7 +280,7 @@ constitute_slo/
 source venv/bin/activate
 
 # Run orchestrator (interactive CLI)
-python orchestrator.py
+python main.py
 
 # Example queries
 Query: what is the health of my application in the past 30 days

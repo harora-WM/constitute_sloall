@@ -5,7 +5,7 @@ and their data is included in the final JSON output and LLM input.
 """
 
 import json
-from orchestrator import SLOOrchestrator
+from main import SLOOrchestrator
 
 
 def test_integration():

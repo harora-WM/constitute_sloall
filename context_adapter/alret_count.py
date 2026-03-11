@@ -1,6 +1,8 @@
 """
 Fetch alerts-action count data from Watermelon API.
 """
+import os
+import sys
 import json
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -8,19 +10,18 @@ from typing import Any, Dict, List, Optional
 import requests
 import urllib3
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import config
 
-KEYCLOAK_URL = "https://wm-sandbox-auth-1.watermelon.us/realms/watermelon/protocol/openid-connect/token"
-ALERTS_COUNT_URL = (
-    "https://wm-sandbox-1.watermelon.us/services/"
-    "wmerrorbudgetalertandnotificationservice/api/alerts-action/count"
-)
+KEYCLOAK_URL = config.KEYCLOAK_URL
+ALERTS_COUNT_URL = config.ALERTS_COUNT_API_URL
 
 
 def get_access_token(
     username: str,
     password: str,
     keycloak_url: str = KEYCLOAK_URL,
-    client_id: str = "web_app",
+    client_id: str = config.KEYCLOAK_CLIENT_ID,
 ) -> Optional[str]:
     data = {
         "grant_type": "password",
@@ -144,9 +145,9 @@ def main(
 def fetch_alerts_for_orchestrator(
     start_time_ms: str,
     end_time_ms: str,
-    app_id: int = 31854,
-    username: str = "wmadmin",
-    password: str = "WM@Dm1n@#2024!!$"
+    app_id: int = config.APP_ID,
+    username: str = config.USERNAME,
+    password: str = config.PASSWORD
 ) -> Optional[Dict[str, Any]]:
     """
     Fetch alerts-action count data for orchestrator integration.
@@ -197,8 +198,8 @@ if __name__ == "__main__":
     print("=" * 50)
 
     # Configuration parameters
-    username = "wmadmin"
-    password = "WM@Dm1n@#2024!!$"
+    username = config.USERNAME
+    password = config.PASSWORD
     start_date = "1770057000000"
     end_date = "1771439400000"
     application_slo_filters = [

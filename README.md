@@ -37,8 +37,11 @@ JAVA_STATS_PASSWORD=your_password
 ### 3. Run the Orchestrator
 
 ```bash
-# Run from project root
-python orchestrator.py
+# Interactive CLI (run from project root)
+python main.py
+
+# FastAPI server (run from project root)
+uvicorn main:app --host 0.0.0.0 --port 8000 --workers 1
 ```
 
 Then enter queries like:
@@ -49,30 +52,29 @@ Then enter queries like:
 ## Architecture
 
 ```
-User Query
+User Query (query, app_id, project_id)
     ↓
-Orchestrator (orchestrator.py)
+Orchestrator (main.py)
     ↓
 Intent Classifier (AWS Bedrock Claude 4.5)
     ↓
 Intent + Entities + Data Sources + Timestamps
     ↓
-┌───────────────────────────────────────────┐
-│  Adapter Routing (based on data_sources)  │
-├───────────────┬───────────────────────────┤
-↓               ↓                           ↓
-Java Stats API  ClickHouse                  (Future: Postgres, OpenSearch)
-(Watermelon)    (Behavior Memory)
-    ↓               ↓
-Transform to LLM Format
+┌─────────────────────────────────────────────────────────┐
+│             Adapter Routing                             │
+│  intent-gated: java_stats_api, clickhouse               │
+│  always-on:    alerts_count, change_impact              │
+└─────────────────────────────────────────────────────────┘
     ↓
-Aggregated JSON Response
+LLM Response Generator (AWS Bedrock Claude 4.5)
+    ↓
+Conversational Response + JSON Export
 ```
 
 ## Components
 
 ### Main Entry Point
-- **`orchestrator.py`** - Coordinates intent classification and data fetching
+- **`main.py`** - Contains `SLOOrchestrator`, interactive CLI, and FastAPI app (`GET /health`, `POST /query`). `app_id` and `project_id` are passed via request body for API; defaults used for CLI.
 
 ### Intent Classification
 - **`intent_classifier/intent_classifier.py`** - LLM-based intent analyzer
@@ -81,8 +83,10 @@ Aggregated JSON Response
 - **`intent_classifier/timestamp.py`** - Time range resolver
 
 ### Context Adapters
-- **`context_adapter/java_stats.py`** - Fetches SLO metrics from Watermelon API
-- **`context_adapter/memory_adapter.py`** - Fetches behavior patterns from ClickHouse
+- **`context_adapter/java_stats.py`** - Fetches SLO metrics from Watermelon API (intent-gated)
+- **`context_adapter/memory_adapter.py`** - Fetches behavior patterns from ClickHouse (intent-gated)
+- **`context_adapter/alret_count.py`** - Fetches alert action counts (always fetched)
+- **`context_adapter/change_pre_post.py`** - Fetches latest deployment and pre/post deviations (always fetched)
 
 ### Utilities
 - **`utils/time_range_resolver.py`** - Natural language time parsing
@@ -106,6 +110,8 @@ Query: "Show unhealthy services in the past 7 days"
 3. Data Fetching:
    - java_stats_api → Error budget, latency, health status
    - clickhouse → Behavior patterns and anomalies
+   - alerts_count → Alert action counts (always fetched)
+   - change_impact → Latest deployment + pre/post deviations (always fetched)
 
 4. Response:
    {
@@ -114,19 +120,24 @@ Query: "Show unhealthy services in the past 7 days"
      "time_resolution": {...},
      "data": {
        "java_stats_api": {...},
-       "clickhouse": {...}
-     }
+       "clickhouse": {...},
+       "alerts_count": {...},
+       "change_impact": {...}
+     },
+     "conversational_response": "..."
    }
 ```
 
 ## Supported Data Sources
 
-| Data Source | Status | Description |
-|------------|---------|-------------|
-| `java_stats_api` | ✅ Implemented | Real-time SLO metrics from Watermelon API |
-| `clickhouse` | ✅ Implemented | Historical behavior patterns and AI memory |
-| `postgres` | ⏳ Not Yet Implemented | SLO definitions, alerts, incidents |
-| `opensearch` | ⏳ Not Yet Implemented | Logs, traces, full-text search |
+| Data Source | Status | Triggered | Description |
+|------------|---------|-----------|-------------|
+| `java_stats_api` | ✅ Implemented | Intent-gated | Real-time SLO metrics from Watermelon API |
+| `clickhouse` | ✅ Implemented | Intent-gated | Historical behavior patterns and AI memory |
+| `alerts_count` | ✅ Implemented | Always | Alert action counts for query time window |
+| `change_impact` | ✅ Implemented | Always | Latest deployment + pre/post EB/RESPONSE deviations |
+| `postgres` | ⏳ Planned | Intent-gated | SLO definitions, alerts, incidents |
+| `opensearch` | ⏳ Planned | Intent-gated | Logs, traces, full-text search |
 
 ## Development
 
