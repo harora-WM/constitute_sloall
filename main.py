@@ -198,7 +198,8 @@ class SLOOrchestrator:
         alerts_data = self._fetch_alerts_count(
             start_time_ms=str(start_time),
             end_time_ms=str(end_time),
-            app_id=effective_app_id
+            app_id=effective_app_id,
+            project_id=effective_project_id
         )
         if alerts_data:
             adapter_data['alerts_count'] = alerts_data
@@ -208,7 +209,7 @@ class SLOOrchestrator:
 
         # Fetch from Change Impact API (always fetch regardless of intent)
         print("   → Fetching from Change Impact API (pre/post deviations)...")
-        change_impact_data = self._fetch_change_impact(app_id=effective_app_id)
+        change_impact_data = self._fetch_change_impact(app_id=effective_app_id, project_id=effective_project_id)
         if change_impact_data:
             adapter_data['change_impact'] = change_impact_data
             print("   ✅ Change Impact data retrieved\n")
@@ -473,7 +474,8 @@ class SLOOrchestrator:
         self,
         start_time_ms: str,
         end_time_ms: str,
-        app_id: int
+        app_id: int,
+        project_id: int = None
     ) -> Optional[Dict[str, Any]]:
         """
         Fetch alerts count data from alerts-action API
@@ -490,6 +492,7 @@ class SLOOrchestrator:
                 start_time_ms=start_time_ms,
                 end_time_ms=end_time_ms,
                 app_id=app_id,
+                project_id=project_id if project_id is not None else self.project_id,
                 username=self.java_stats_username,
                 password=self.java_stats_password
             )
@@ -497,7 +500,7 @@ class SLOOrchestrator:
             print(f"   ✗ Error fetching alerts count: {e}")
             return None
 
-    def _fetch_change_impact(self, app_id: int) -> Optional[Dict[str, Any]]:
+    def _fetch_change_impact(self, app_id: int, project_id: int = None) -> Optional[Dict[str, Any]]:
         """
         Fetch latest change and its impact (pre/post deviations)
 
@@ -507,6 +510,7 @@ class SLOOrchestrator:
         try:
             return fetch_change_impact_for_orchestrator(
                 application_id=app_id,
+                project_id=project_id if project_id is not None else self.project_id,
                 username=self.java_stats_username,
                 password=self.java_stats_password
             )

@@ -66,13 +66,14 @@ def fetch_alerts_action_count(
     application_slo_filters: List[Dict[str, Any]],
     username: str,
     password: str,
+    project_id: int = config.PROJECT_ID,
     api_url: str = ALERTS_COUNT_URL,
 ) -> Optional[Any]:
     token = get_access_token(username, password)
     if not token:
         return None
 
-    params = {"startDate": start_date_ms, "endDate": end_date_ms}
+    params = {"startDate": start_date_ms, "endDate": end_date_ms, "project_id": project_id}
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
@@ -112,6 +113,7 @@ def main(
     start_date_ms: str,
     end_date_ms: str,
     application_slo_filters: List[Dict[str, Any]],
+    project_id: int = config.PROJECT_ID,
     output_file: str = "alerts_action_count_output.json",
 ) -> int:
     response_payload = fetch_alerts_action_count(
@@ -120,6 +122,7 @@ def main(
         application_slo_filters=application_slo_filters,
         username=username,
         password=password,
+        project_id=project_id,
     )
     if response_payload is None:
         return 1
@@ -146,6 +149,7 @@ def fetch_alerts_for_orchestrator(
     start_time_ms: str,
     end_time_ms: str,
     app_id: int = config.APP_ID,
+    project_id: int = config.PROJECT_ID,
     username: str = config.USERNAME,
     password: str = config.PASSWORD
 ) -> Optional[Dict[str, Any]]:
@@ -156,6 +160,7 @@ def fetch_alerts_for_orchestrator(
         start_time_ms: Start time in milliseconds (string)
         end_time_ms: End time in milliseconds (string)
         app_id: Application ID (default: 31854)
+        project_id: Project ID (default: 215853)
         username: Keycloak username
         password: Keycloak password
 
@@ -174,6 +179,7 @@ def fetch_alerts_for_orchestrator(
         application_slo_filters=application_slo_filters,
         username=username,
         password=password,
+        project_id=project_id,
     )
 
     if response_payload is None:
@@ -200,11 +206,15 @@ if __name__ == "__main__":
     # Configuration parameters
     username = config.USERNAME
     password = config.PASSWORD
-    start_date = "1770057000000"
-    end_date = "1771439400000"
+    start_date = "1771957800000"
+    end_date = "1773340200000"
     application_slo_filters = [
-        {"id": 32707, "sloTypes": ["RESPONSE"]},
-        {"id": 31854, "sloTypes": ["ERROR", "RESPONSE"]},
+        {"id": 32707,  "sloTypes": ["RESPONSE"]},
+        {"id": 32752,  "sloTypes": ["ERROR"]},
+        {"id": 215853, "sloTypes": ["ERROR", "RESPONSE"]},
+        {"id": 217602, "sloTypes": ["ERROR"]},
+        {"id": 32753,  "sloTypes": ["ERROR"]},
+        {"id": 32722,  "sloTypes": ["ERROR"]},
     ]
     output_file = "alerts_action_count_output.json"
 

@@ -61,7 +61,7 @@ User Query
       Fuzzy match service name -> service_id using services.yaml
   -> Step 3: Data Fetching (parallel)
       java_stats_api  -- if 'java_stats_api' in data_sources (intent-routed)
-      clickhouse      -- if 'clickhouse' in data_sources (all 76 patterns, no filtering)
+      clickhouse      -- if 'clickhouse' in data_sources (all all patterns, no filtering)
       alerts_count    -- ALWAYS fetched (regardless of intent)
       change_impact   -- ALWAYS fetched (regardless of intent)
   -> Step 4: Conversational Response (LLM Call #2, llm_response_generator.py)
@@ -72,7 +72,7 @@ User Query
 
 ### Core Components
 
-**`config.py`** — Single source of truth for all configuration. Loads `.env` using its own `__file__` path (works from any working directory). Every adapter and `main.py` imports this instead of calling `os.getenv()` directly.
+**`config.py`** — Single source of truth for all configuration. Loads `.env` using its own `__file__` path (works from any working directory). All adapters in `context_adapter/` and `main.py` import this instead of calling `os.getenv()` directly. **Exception:** `intent_classifier/intent_classifier.py` reads env vars via `os.getenv()` directly and calls its own `load_dotenv()` without a path — it does NOT import `config.py`.
 
 **`main.py`** — Contains `SLOOrchestrator` class, `main()` interactive CLI, and the FastAPI `app` instance. `app_id` and `project_id` come from `config.APP_ID` / `config.PROJECT_ID` for CLI; for API they come from the request body (defaulting to the same config values if not supplied).
 
@@ -83,7 +83,7 @@ User Query
 - `SERVICE_HEALTH` -> `get_service_health(service_id)` -> same 4 arrays for one service (returns None if no service_id)
 - `ERROR_BUDGET_STATUS` -> `get_error_budget_status()` -> 3 arrays (unhealthy_eb, at_risk_eb, healthy_eb)
 
-**`context_adapter/memory_adapter.py`** — Fetches historical behavior patterns from ClickHouse `ai_service_behavior_memory` table. Returns **ALL** patterns for the given `app_id` with no time or intent filtering. Currently 76 patterns for app 31854.
+**`context_adapter/memory_adapter.py`** — Fetches historical behavior patterns from ClickHouse `ai_service_behavior_memory` table. Returns **ALL** patterns for the given `app_id` with no time or intent filtering. Currently 108 patterns for app 31854.
 
 **`context_adapter/alret_count.py`** — Fetches alert action counts from `wmerrorbudgetalertandnotificationservice` API via Keycloak auth. Always called by orchestrator for the full query time window, SLO types `["ERROR", "RESPONSE"]`. Entry point: `fetch_alerts_for_orchestrator()`.
 
@@ -102,14 +102,14 @@ User Query
 | Source | Triggered | Description |
 |--------|-----------|-------------|
 | `java_stats_api` | If in `data_sources` from intent | Real-time SLO metrics; primary intent routes to correct function |
-| `clickhouse` | If in `data_sources` from intent | All 76 historical behavior patterns; no time/intent filtering |
+| `clickhouse` | If in `data_sources` from intent | All historical behavior patterns; no time/intent filtering |
 | `alerts_count` | Always | Alert action counts for query time window |
 | `change_impact` | Always | Latest deployment + top-5 EB/RESPONSE deviations pre/post release |
 | `postgres` | Not implemented | Planned for SLO definitions |
 | `opensearch` | Not implemented | Planned for logs/traces |
 
 ### ClickHouse Tables
-- `ai_service_behavior_memory` — behavior patterns (76 records, app 31854)
+- `ai_service_behavior_memory` — behavior patterns (108 records, app 31854)
 - `ai_service_features_hourly` — service inventory (source for `services.yaml`)
 
 ## Environment Variables (.env)
@@ -189,4 +189,4 @@ OPENSEARCH_PAGE_SIZE=5000
 
 **`context_adapter/intent_based_queries.py`** is no longer used — `memory_adapter.py` now fetches all patterns directly without intent-based dispatch. The file still exists in the repo but is not imported anywhere.
 
-**Adding a new adapter:** import `config` at the top (with the `sys.path.insert` pattern used in existing adapters), add any new URLs/credentials to `.env` and `config.py`, then wire the entry-point function into `SLOOrchestrator.process_query()` in `main.py`.
+**Adding a new adapter:** At the top of the new file, use the `sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))` pattern before `import config` (see existing adapters). Add any new URLs/credentials to `.env` and `config.py`, then wire the entry-point function into `SLOOrchestrator.process_query()` in `main.py`. Note: only `context_adapter/` files follow this `config.py` pattern — do not apply it to `intent_classifier/`.

@@ -77,13 +77,14 @@ def get_access_token(
         return None
 
 
-def get_latest_change(token: str, application_id: int = config.APP_ID) -> Optional[Dict[str, Any]]:
+def get_latest_change(token: str, application_id: int = config.APP_ID, project_id: int = config.PROJECT_ID) -> Optional[Dict[str, Any]]:
     """
     Get the latest change from release-histories API.
 
     Args:
         token: Access token for authentication
         application_id: Application ID
+        project_id: Project ID
 
     Returns:
         Latest change data if successful, None otherwise
@@ -91,6 +92,9 @@ def get_latest_change(token: str, application_id: int = config.APP_ID) -> Option
     url = f"{config.RELEASE_HISTORIES_API_URL}/{application_id}"
     headers = {
         'Authorization': f'Bearer {token}'
+    }
+    params = {
+        'project_id': project_id
     }
 
     try:
@@ -100,6 +104,7 @@ def get_latest_change(token: str, application_id: int = config.APP_ID) -> Option
         response = requests.get(
             url,
             headers=headers,
+            params=params,
             verify=False
         )
 
@@ -122,7 +127,7 @@ def get_latest_change(token: str, application_id: int = config.APP_ID) -> Option
         return None
 
 
-def get_top_5_eb_deviations(token: str, release_time_millis: int, application_id: int = config.APP_ID, sort_order: str = "DESC") -> Optional[Dict[str, Any]]:
+def get_top_5_eb_deviations(token: str, release_time_millis: int, application_id: int = config.APP_ID, project_id: int = config.PROJECT_ID, sort_order: str = "DESC") -> Optional[Dict[str, Any]]:
     """
     Get top 5 services with EB (Error Budget) deviations for a specific release time.
 
@@ -130,12 +135,13 @@ def get_top_5_eb_deviations(token: str, release_time_millis: int, application_id
         token: Access token for authentication
         release_time_millis: Release time in milliseconds
         application_id: Application ID
+        project_id: Project ID
         sort_order: Sort order - "DESC" for positive deviations, "ASC" for negative deviations
 
     Returns:
         Top 5 EB deviations data if successful, None otherwise
     """
-    url = f"{config.RELEASE_IMPACT_API_URL}?priority=DEVIATION&sort={sort_order}"
+    url = f"{config.RELEASE_IMPACT_API_URL}?priority=DEVIATION&sort={sort_order}&project_id={project_id}"
 
     params = {
         "applicationId": application_id,
@@ -179,7 +185,7 @@ def get_top_5_eb_deviations(token: str, release_time_millis: int, application_id
         return None
 
 
-def get_top_5_response_deviations(token: str, release_time_millis: int, application_id: int = config.APP_ID, sort_order: str = "DESC") -> Optional[Dict[str, Any]]:
+def get_top_5_response_deviations(token: str, release_time_millis: int, application_id: int = config.APP_ID, project_id: int = config.PROJECT_ID, sort_order: str = "DESC") -> Optional[Dict[str, Any]]:
     """
     Get top 5 services with RESPONSE deviations for a specific release time.
 
@@ -187,12 +193,13 @@ def get_top_5_response_deviations(token: str, release_time_millis: int, applicat
         token: Access token for authentication
         release_time_millis: Release time in milliseconds
         application_id: Application ID
+        project_id: Project ID
         sort_order: Sort order - "DESC" for positive deviations, "ASC" for negative deviations
 
     Returns:
         Top 5 RESPONSE deviations data if successful, None otherwise
     """
-    url = f"{config.RELEASE_IMPACT_API_URL}?priority=DEVIATION&sort={sort_order}"
+    url = f"{config.RELEASE_IMPACT_API_URL}?priority=DEVIATION&sort={sort_order}&project_id={project_id}"
 
     params = {
         "applicationId": application_id,
@@ -238,6 +245,7 @@ def get_top_5_response_deviations(token: str, release_time_millis: int, applicat
 
 def fetch_change_impact_for_orchestrator(
     application_id: int = config.APP_ID,
+    project_id: int = config.PROJECT_ID,
     username: str = config.USERNAME,
     password: str = config.PASSWORD
 ) -> Optional[Dict[str, Any]]:
@@ -246,6 +254,7 @@ def fetch_change_impact_for_orchestrator(
 
     Args:
         application_id: Application ID (default: from config)
+        project_id: Project ID (default: from config)
         username: Keycloak username
         password: Keycloak password
 
@@ -259,7 +268,7 @@ def fetch_change_impact_for_orchestrator(
         return None
 
     # Step 2: Get latest change
-    latest_change = get_latest_change(token, application_id)
+    latest_change = get_latest_change(token, application_id, project_id)
     if not latest_change:
         print("✗ Failed to get latest change for change impact data")
         return None
@@ -270,10 +279,10 @@ def fetch_change_impact_for_orchestrator(
         return None
 
     # Step 3: Get all deviations (EB and RESPONSE, positive and negative)
-    positive_eb = get_top_5_eb_deviations(token, release_time_millis, application_id, sort_order="DESC")
-    negative_eb = get_top_5_eb_deviations(token, release_time_millis, application_id, sort_order="ASC")
-    positive_response = get_top_5_response_deviations(token, release_time_millis, application_id, sort_order="DESC")
-    negative_response = get_top_5_response_deviations(token, release_time_millis, application_id, sort_order="ASC")
+    positive_eb = get_top_5_eb_deviations(token, release_time_millis, application_id, project_id, sort_order="DESC")
+    negative_eb = get_top_5_eb_deviations(token, release_time_millis, application_id, project_id, sort_order="ASC")
+    positive_response = get_top_5_response_deviations(token, release_time_millis, application_id, project_id, sort_order="DESC")
+    negative_response = get_top_5_response_deviations(token, release_time_millis, application_id, project_id, sort_order="ASC")
 
     # Return in orchestrator-compatible format
     return {
