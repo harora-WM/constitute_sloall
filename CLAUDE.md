@@ -19,16 +19,23 @@ python main.py
 # FastAPI server (must run from project root)
 uvicorn main:app --host 0.0.0.0 --port 8000 --workers 1
 
+# Streamlit UI — requires FastAPI backend to be running first
+streamlit run app.py
+
 # Generate services.yaml from ClickHouse (run when services change)
 python fetch_services.py
 
 # Test all adapters end-to-end (requires live credentials)
 python test_new_adapters.py
 
+# Test hybrid timestamp extraction across 89 queries (no credentials needed for regex stage)
+python run_check.py
+
 # Test components individually
 python utils/service_matcher.py "dashboard-stats"
 python llm_response_generator.py
 cd intent_classifier && python intent_classifier.py
+cd intent_classifier && python timestamp.py "show errors in the last 15 minutes"
 cd context_adapter && python memory_adapter.py
 cd context_adapter && python java_stats.py
 cd context_adapter && python alret_count.py
@@ -44,7 +51,7 @@ cd context_adapter && python change_pre_post.py
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/health` | Liveness/readiness probe. Returns 503 if orchestrator failed to initialize. |
-| POST | `/query` | Submit a natural language SLO query. Body: `QueryRequest` (`query`, `app_id`, `project_id`). Typical latency: 8–15s (two LLM calls + parallel data fetches). |
+| POST | `/query` | Submit a natural language SLO query. Body: `QueryRequest` (`query`, `app_id`, `project_id`). Typical latency: 8–15s (two LLM calls + sequential data fetches). |
 
 **Do NOT run FastAPI with more than 1 worker** — boto3 clients are stateful and multiple workers cause Bedrock rate limit issues. Always use `--workers 1`.
 
@@ -56,10 +63,10 @@ cd context_adapter && python change_pre_post.py
 User Query
   -> Step 1: Intent Classification (LLM Call #1, intent_classifier.py)
       Extracts: primary_intent, secondary_intents, enriched_intents,
-                entities (service, time_range), data_sources, timestamps
+                entities (service only), data_sources, timestamps
   -> Step 2: Service Resolution (service_matcher.py)
       Fuzzy match service name -> service_id using services.yaml
-  -> Step 3: Data Fetching (parallel)
+  -> Step 3: Data Fetching (sequential)
       java_stats_api  -- if 'java_stats_api' in data_sources (intent-routed)
       clickhouse      -- if 'clickhouse' in data_sources (all all patterns, no filtering)
       alerts_count    -- ALWAYS fetched (regardless of intent)
@@ -76,14 +83,14 @@ User Query
 
 **`main.py`** — Contains `SLOOrchestrator` class, `main()` interactive CLI, and the FastAPI `app` instance. `app_id` and `project_id` come from `config.APP_ID` / `config.PROJECT_ID` for CLI; for API they come from the request body (defaulting to the same config values if not supplied).
 
-**`intent_classifier/intent_classifier.py`** — Layer 1 LLM (AWS Bedrock). Outputs primary/secondary/enriched intents, entities, data_sources list, and UTC millisecond timestamps. Config files: `intent_categories.yaml` (9 categories, 50+ intents), `enrichment_rules.yaml`, `data_sources.yaml`.
+**`intent_classifier/intent_classifier.py`** — Layer 1 LLM (AWS Bedrock). Outputs primary/secondary/enriched intents, entities (`service` only — no `time_range`/`comparison_range`), data_sources list, and UTC millisecond timestamps. Timestamp resolution calls `timestamp.py` with the raw user query string. Config files: `intent_categories.yaml` (9 categories, 50+ intents), `enrichment_rules.yaml`, `data_sources.yaml`.
 
 **`context_adapter/java_stats.py`** — Fetches real-time SLO metrics from Watermelon API via Keycloak auth. Routes by **primary intent first**, then falls back to secondary/enriched:
 - `CURRENT_HEALTH` -> `get_current_health()` -> 4 arrays (unhealthy_eb, at_risk_eb, unhealthy_response, at_risk_response)
 - `SERVICE_HEALTH` -> `get_service_health(service_id)` -> same 4 arrays for one service (returns None if no service_id)
 - `ERROR_BUDGET_STATUS` -> `get_error_budget_status()` -> 3 arrays (unhealthy_eb, at_risk_eb, healthy_eb)
 
-**`context_adapter/memory_adapter.py`** — Fetches historical behavior patterns from ClickHouse `ai_service_behavior_memory` table. Returns **ALL** patterns for the given `app_id` with no time or intent filtering. Currently 108 patterns for app 31854.
+**`context_adapter/memory_adapter.py`** — Fetches historical behavior patterns from ClickHouse `ai_service_behavior_memory` table. When called by the orchestrator, `_fetch_memory_adapter` receives the full `intents` set and routes to `fetch_patterns_by_intent()`. If no intents are provided it falls back to `fetch_behavior_service_memory()` (backward-compat path). Currently 108 patterns for app 31854.
 
 **`context_adapter/alret_count.py`** — Fetches alert action counts from `wmerrorbudgetalertandnotificationservice` API via Keycloak auth. Always called by orchestrator for the full query time window, SLO types `["ERROR", "RESPONSE"]`. Entry point: `fetch_alerts_for_orchestrator()`.
 
@@ -95,7 +102,9 @@ User Query
 
 **`utils/service_matcher.py`** — Fuzzy matching via `SequenceMatcher`. Loads `services.yaml` (125 services). Threshold: 0.3; substring matches boosted to 0.7. Returns ranked results with similarity scores.
 
-**`utils/time_range_resolver.py`** / **`intent_classifier/timestamp.py`** — Two equivalent implementations for converting natural language time ranges to UTC milliseconds. "current" = last 1 hour. Index granularity: HOURLY (<=3 days), DAILY (>3 days). Always milliseconds.
+**`intent_classifier/timestamp.py`** — Converts the raw user query directly to UTC millisecond timestamps using a **hybrid three-stage approach**: (1) deterministic regex/rule-based parsing, (2) Claude Sonnet LLM fallback for complex/ambiguous expressions, (3) hard fallback to last 1 hour. Determines index granularity: HOURLY (<=3 days), DAILY (>3 days). Called with the raw query string, not an LLM-extracted label.
+
+**`app.py`** — Streamlit chat UI. Talks to the FastAPI backend at `http://localhost:8000`. Renders the conversational response as markdown; shows intent, resolved time range, index, and per-source stats in a collapsible "Technical details" expander. App ID and Project ID are configurable from the sidebar.
 
 ## Data Sources
 
@@ -188,5 +197,11 @@ OPENSEARCH_PAGE_SIZE=5000
 **Import errors on startup:** Ensure `__init__.py` files exist in `intent_classifier/`, `context_adapter/`, and `utils/`.
 
 **`context_adapter/intent_based_queries.py`** is no longer used — `memory_adapter.py` now fetches all patterns directly without intent-based dispatch. The file still exists in the repo but is not imported anywhere.
+
+**`change_pre_post` ignores query time window:** It always fetches the single latest release from the API (sorted by date) and uses that release's `dateTimeMillis` as the anchor. The user's query start/end time is never passed to this adapter.
+
+**`alret_count` via orchestrator uses app-level filter only:** `fetch_alerts_for_orchestrator()` always sends `[{"id": app_id, "sloTypes": ["ERROR", "RESPONSE"]}]` — just one app-level filter. The `__main__` block uses more granular per-service filters for standalone testing only.
+
+**`TimestampResolver` class docstring says "requires ANTHROPIC_API_KEY":** This is wrong. The LLM fallback in `timestamp.py` uses `AWS_ACCESS_KEY_ID` via boto3/Bedrock, exactly like the intent classifier. The env var name in the docstring is stale.
 
 **Adding a new adapter:** At the top of the new file, use the `sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))` pattern before `import config` (see existing adapters). Add any new URLs/credentials to `.env` and `config.py`, then wire the entry-point function into `SLOOrchestrator.process_query()` in `main.py`. Note: only `context_adapter/` files follow this `config.py` pattern — do not apply it to `intent_classifier/`.

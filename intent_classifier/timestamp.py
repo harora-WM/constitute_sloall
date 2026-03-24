@@ -1,309 +1,544 @@
 #!/usr/bin/env python3
 """
 Time Range Resolution Module
-Converts natural language time ranges to exact UTC timestamps and determines appropriate index granularity
+
+Converts natural language time expressions to exact UTC millisecond timestamps.
+
+Hybrid architecture:
+  1. Deterministic regex / rule-based parsing  (fast, high confidence)
+  2. Claude Sonnet LLM fallback               (handles complex / ambiguous queries)
+  3. Hard fallback                             (last 1 hour)
+
+Index granularity rule:
+  - duration <= 3 days  →  HOURLY
+  - duration >  3 days  →  DAILY
 """
 
-from datetime import datetime, timedelta
-from typing import Dict, Tuple, Any
-import pytz
+import os
 import re
+import json
+import logging
+import boto3
+from datetime import datetime, timedelta, timezone
+from typing import Dict, Any, Optional
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+# Time-of-day periods: (start_hour_inclusive, end_hour_exclusive)
+PERIOD_HOURS: dict[str, tuple[int, int]] = {
+    "early morning": (4, 6),
+    "morning":       (6, 12),
+    "noon":          (12, 13),
+    "lunch":         (12, 13),
+    "afternoon":     (12, 17),
+    "evening":       (17, 21),
+    "night":         (21, 24),
+    "tonight":       (21, 24),
+    "midnight":      (0, 1),
+}
+
+# Canonical seconds-per-unit for relative window calculations
+UNIT_SECONDS: dict[str, int] = {
+    "second": 1,     "seconds": 1,     "sec": 1,    "secs": 1,
+    "minute": 60,    "minutes": 60,    "min": 60,   "mins": 60,
+    "hour":   3600,  "hours":   3600,  "hr":  3600, "hrs":  3600,
+    "day":    86400,  "days":    86400,
+    "week":   604800, "weeks":   604800,
+    "month":  2592000, "months":  2592000,   # ~30 days
+    "year":   31536000, "years":  31536000,  # ~365 days
+}
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+def _now() -> datetime:
+    """Current time with local timezone."""
+    return datetime.now().astimezone()
+
+
+def _today_start() -> datetime:
+    """Today at 00:00:00 local time."""
+    return _now().replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def _to_ms(dt: datetime) -> int:
+    """Convert a datetime to Unix milliseconds (int)."""
+    if dt.tzinfo is None:
+        dt = dt.astimezone()
+    return int(dt.timestamp() * 1000)
+
+
+def _duration_days(start: datetime, end: datetime) -> float:
+    return (end - start).total_seconds() / 86400.0
+
+
+def _normalize(query: str) -> str:
+    """
+    Lowercase and normalise synonym phrases so a single set of regex rules
+    covers 'past', 'previous', 'prior', 'in the last', etc.
+    """
+    q = query.lower().strip()
+    q = re.sub(r"\bpast\b",              "last", q)
+    q = re.sub(r"\bprevious\b",          "last", q)
+    q = re.sub(r"\bprev\b",              "last", q)
+    q = re.sub(r"\bprior\b",             "last", q)
+    q = re.sub(r"\bin\s+the\s+last\b",   "last", q)
+    # keep colons (14:30), dots/dashes (date separators / decimals)
+    q = re.sub(r"[^\w\s:.\-]", " ", q)
+    q = re.sub(r"\s+", " ", q).strip()
+    return q
+
+
+def _parse_time_str(raw: str, base_date: datetime) -> Optional[datetime]:
+    """
+    Parse a short time token ('3pm', '15:00', 'morning') onto *base_date*.
+    Returns a tz-aware datetime or None.
+    """
+    s = raw.strip().lower()
+
+    # Named period → start hour of that period
+    for period, (start_h, _) in PERIOD_HOURS.items():
+        if s == period:
+            return base_date.replace(hour=start_h, minute=0, second=0, microsecond=0)
+
+    # HH:MM [am|pm]
+    m = re.fullmatch(r"(\d{1,2}):(\d{2})\s*(am|pm)?", s)
+    if m:
+        h, mi, ampm = int(m.group(1)), int(m.group(2)), m.group(3)
+        if ampm == "pm" and h != 12:
+            h += 12
+        elif ampm == "am" and h == 12:
+            h = 0
+        return base_date.replace(hour=h, minute=mi, second=0, microsecond=0)
+
+    # H am|pm  (e.g. "3pm", "10 am")
+    m = re.fullmatch(r"(\d{1,2})\s*(am|pm)", s)
+    if m:
+        h, ampm = int(m.group(1)), m.group(2)
+        if ampm == "pm" and h != 12:
+            h += 12
+        elif ampm == "am" and h == 12:
+            h = 0
+        return base_date.replace(hour=h, minute=0, second=0, microsecond=0)
+
+    # dateutil last-resort
+    try:
+        from dateutil import parser as _dp
+        dt = _dp.parse(s, default=base_date)
+        if dt.hour != base_date.hour or dt.minute != base_date.minute:
+            return dt.replace(second=0, microsecond=0, tzinfo=base_date.tzinfo)
+    except Exception:
+        pass
+
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Deterministic parser
+# ---------------------------------------------------------------------------
+
+def _parse_deterministic(query: str) -> Optional[tuple[datetime, datetime]]:
+    """
+    Try every deterministic rule in priority order.
+    Returns (start, end) datetimes, or None if nothing matched.
+    """
+    q     = _normalize(query)
+    now   = _now()
+    today = _today_start()
+
+    # ── Special named ranges ────────────────────────────────────────────────
+
+    if re.search(r"\bday before yesterday\b", q):
+        return (today - timedelta(days=2),
+                today - timedelta(days=1) - timedelta(seconds=1))
+
+    if re.search(r"\blast\s+(working|business)\s+day\b", q):
+        d = today - timedelta(days=1)
+        while d.weekday() >= 5:          # skip Sat(5), Sun(6)
+            d -= timedelta(days=1)
+        return (d, d.replace(hour=23, minute=59, second=59))
+
+    if re.search(r"\blast\s+night\b", q):
+        yesterday = today - timedelta(days=1)
+        return (yesterday.replace(hour=21, minute=0, second=0),
+                today.replace(hour=0, minute=0, second=0) - timedelta(seconds=1))
+
+    if re.search(r"\blast\s+weekend\b", q):
+        days_back = today.weekday() + 2  # Mon→2, …, Sun→8
+        last_sat  = today - timedelta(days=days_back)
+        last_sun  = last_sat + timedelta(days=1)
+        return (last_sat, last_sun.replace(hour=23, minute=59, second=59))
+
+    if re.search(r"\b(this\s+)?weekend\b", q):
+        days_ahead = (5 - today.weekday()) % 7
+        sat = today + timedelta(days=days_ahead)
+        sun = sat + timedelta(days=1)
+        return (sat, sun.replace(hour=23, minute=59, second=59))
+
+    if re.search(r"\b(start|beginning)\s+of\s+(the\s+)?week\b", q):
+        monday = today - timedelta(days=today.weekday())
+        return (monday, now)
+
+    if re.search(r"\bend\s+of\s+(the\s+)?week\b", q):
+        monday = today - timedelta(days=today.weekday())
+        sunday = monday + timedelta(days=6)
+        return (monday, sunday.replace(hour=23, minute=59, second=59))
+
+    # ── Explicit time ranges ─────────────────────────────────────────────────
+
+    # "between TIME and TIME [today|yesterday]"
+    m = re.search(r"\bbetween\s+(.+?)\s+and\s+(.+?)(?:\s+(today|yesterday))?\s*$", q)
+    if m:
+        ref = today - timedelta(days=1) if m.group(3) == "yesterday" else today
+        t1  = _parse_time_str(m.group(1).strip(), ref)
+        t2  = _parse_time_str(m.group(2).strip(), ref)
+        if t1 and t2:
+            return (t1, t2)
+
+    # "yesterday TIME to TIME"
+    m = re.search(
+        r"\byesterday\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s+to\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\b",
+        q,
+    )
+    if m:
+        ref = today - timedelta(days=1)
+        t1  = _parse_time_str(m.group(1).strip(), ref)
+        t2  = _parse_time_str(m.group(2).strip(), ref)
+        if t1 and t2:
+            return (t1, t2)
+
+    # "[from] TIME to TIME [today|yesterday]"
+    m = re.search(
+        r"\b(?:from\s+)?(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s+to\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)"
+        r"(?:\s+(today|yesterday))?\b",
+        q,
+    )
+    if m:
+        ref = today - timedelta(days=1) if m.group(3) == "yesterday" else today
+        t1  = _parse_time_str(m.group(1).strip(), ref)
+        t2  = _parse_time_str(m.group(2).strip(), ref)
+        if t1 and t2:
+            return (t1, t2)
+
+    # "from DATESTR to DATESTR" — uses dateutil
+    m = re.search(r"\bfrom\s+(.+?)\s+to\s+(.+?)(?:\s+\w+)?\s*$", q)
+    if m:
+        try:
+            from dateutil import parser as _dp
+            t1 = _dp.parse(m.group(1), default=today).astimezone()
+            t2 = _dp.parse(m.group(2), default=today).astimezone()
+            return (t1, t2)
+        except Exception:
+            pass
+
+    # ── Relative time windows ────────────────────────────────────────────────
+
+    # Compound: "last 2 hours 20 minutes", "last 1 day 5 hours", etc.
+    m = re.search(
+        r"\blast\s+((?:\d+(?:\.\d+)?\s*"
+        r"(?:seconds?|secs?|minutes?|mins?|hours?|hrs?|days?|weeks?|months?|years?)\s*)+)\b",
+        q,
+    )
+    if m:
+        total_secs = 0.0
+        for pair in re.finditer(
+            r"(\d+(?:\.\d+)?)\s*(seconds?|secs?|minutes?|mins?|hours?|hrs?|days?|weeks?|months?|years?)",
+            m.group(1),
+        ):
+            total_secs += float(pair.group(1)) * UNIT_SECONDS.get(pair.group(2), 3600)
+        if total_secs > 0:
+            return (now - timedelta(seconds=total_secs), now)
+
+    # Bare singular: "last hour", "last minute", "last day"
+    m = re.search(r"\blast\s+(minute|hour|day)\b", q)
+    if m:
+        return (now - timedelta(seconds=UNIT_SECONDS[m.group(1)]), now)
+
+    # ── Named calendar periods ───────────────────────────────────────────────
+
+    if re.search(r"\bthis\s+year\b", q):
+        return (today.replace(month=1, day=1), now)
+
+    if re.search(r"\blast\s+year\b", q):
+        s = today.replace(year=today.year - 1, month=1, day=1)
+        e = today.replace(month=1, day=1) - timedelta(seconds=1)
+        return (s, e)
+
+    if re.search(r"\bthis\s+month\b", q):
+        return (today.replace(day=1), now)
+
+    if re.search(r"\blast\s+month\b", q):
+        first_this = today.replace(day=1)
+        e = first_this - timedelta(seconds=1)
+        s = e.replace(day=1, hour=0, minute=0, second=0)
+        return (s, e)
+
+    if re.search(r"\bthis\s+week\b", q):
+        monday = today - timedelta(days=today.weekday())
+        return (monday, now)
+
+    if re.search(r"\blast\s+week\b", q):
+        this_mon = today - timedelta(days=today.weekday())
+        last_mon = this_mon - timedelta(weeks=1)
+        last_sun = this_mon - timedelta(seconds=1)
+        return (last_mon, last_sun)
+
+    # "yesterday PERIOD" — must be checked before bare "yesterday"
+    m = re.search(
+        r"\byesterday\s+(early\s+morning|morning|afternoon|evening|night|tonight)\b", q
+    )
+    if m:
+        start_h, end_h = PERIOD_HOURS.get(m.group(1), (0, 23))
+        yesterday = today - timedelta(days=1)
+        s = yesterday.replace(hour=start_h, minute=0, second=0)
+        if end_h >= 24:
+            e = today.replace(hour=0, minute=0, second=0) - timedelta(seconds=1)
+        else:
+            e = yesterday.replace(hour=end_h, minute=0, second=0)
+        return (s, e)
+
+    if re.search(r"\byesterday\b", q):
+        return (today - timedelta(days=1), today - timedelta(seconds=1))
+
+    # "[today|this] PERIOD" or bare period name
+    m = re.search(
+        r"\b(?:today\s+|this\s+)?(early\s+morning|morning|noon|lunch|afternoon|evening|night|tonight)\b",
+        q,
+    )
+    if m:
+        start_h, end_h = PERIOD_HOURS.get(m.group(1), (6, 12))
+        s = today.replace(hour=start_h, minute=0, second=0)
+        # Period hasn't started yet today — use yesterday's instead
+        if s > now:
+            yesterday = today - timedelta(days=1)
+            s = yesterday.replace(hour=start_h, minute=0, second=0)
+            if end_h >= 24:
+                e = today.replace(hour=0, minute=0, second=0) - timedelta(seconds=1)
+            else:
+                e = yesterday.replace(hour=end_h, minute=0, second=0)
+        else:
+            if end_h >= 24:
+                e = (today + timedelta(days=1)).replace(hour=0, minute=0, second=0) - timedelta(seconds=1)
+            else:
+                e = min(today.replace(hour=end_h, minute=0, second=0), now)
+        return (s, e)
+
+    if re.search(r"\btoday\b", q):
+        return (today, now)
+
+    # ── Single boundary ──────────────────────────────────────────────────────
+
+    m = re.search(r"\b(?:since|after)\s+(.+?)\s*$", q)
+    if m:
+        ref_str = m.group(1).strip()
+        if ref_str in PERIOD_HOURS:
+            start_h, _ = PERIOD_HOURS[ref_str]
+            s = today.replace(hour=start_h, minute=0, second=0)
+            # Period hasn't happened yet today — use yesterday's
+            if s > now:
+                s = (today - timedelta(days=1)).replace(hour=start_h, minute=0, second=0)
+            return (s, now)
+        t = _parse_time_str(ref_str, today)
+        if t:
+            # Time hasn't happened yet today — use yesterday's
+            if t > now:
+                t = t - timedelta(days=1)
+            return (t, now)
+        try:
+            from dateutil import parser as _dp
+            t = _dp.parse(ref_str, default=today).astimezone()
+            if t > now:
+                # Month/date without an explicit year was defaulted to the current
+                # year but that lands in the future — roll back one year.
+                t = t.replace(year=t.year - 1)
+            return (t, now)
+        except Exception:
+            pass
+
+    return None
+
+
+# ---------------------------------------------------------------------------
+# LLM fallback — Claude Sonnet via Anthropic API
+# ---------------------------------------------------------------------------
+
+def _parse_with_llm(query: str) -> Optional[tuple[datetime, datetime]]:
+    """
+    Ask Claude Sonnet (via AWS Bedrock) to extract the time range.
+    Uses the same boto3 client pattern as intent_classifier.py.
+    Returns None if credentials are missing or the call fails.
+    """
+    if not os.getenv("AWS_ACCESS_KEY_ID"):
+        logger.debug("AWS credentials not set — skipping LLM fallback")
+        return None
+
+    now     = _now()
+    now_str = now.strftime("%Y-%m-%dT%H:%M:%S")
+    tz_name = now.tzname() or "local"
+
+    system_prompt = (
+        "You are a time-range extraction assistant for a service monitoring system.\n"
+        "Given a natural language query, extract start_time and end_time.\n\n"
+        "Rules:\n"
+        "- Return ONLY a valid JSON object with exactly two keys: start_time, end_time.\n"
+        "- Timestamps must be ISO 8601 UTC format: YYYY-MM-DDTHH:MM:SS\n"
+        "- Period definitions: morning 06–12, afternoon 12–17, evening 17–21, night 21–24.\n"
+        "- If completely ambiguous → use last 1 hour.\n"
+        "- Output ONLY the JSON — no explanation, no markdown fences."
+    )
+    user_msg = (
+        f"Current time ({tz_name}): {now_str}\n\n"
+        f"Query: {query}\n\n"
+        "Return the JSON time range:"
+    )
+
+    try:
+        client = boto3.client(
+            service_name="bedrock-runtime",
+            region_name=os.getenv("AWS_REGION", "us-east-1"),
+            aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+            aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+        )
+        request_body = {
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": 128,
+            "temperature": 0.0,
+            "system": system_prompt,
+            "messages": [{"role": "user", "content": user_msg}],
+        }
+        response      = client.invoke_model(
+            modelId=os.getenv("BEDROCK_MODEL_ID", "global.anthropic.claude-sonnet-4-5-20250929-v1:0"),
+            body=json.dumps(request_body),
+        )
+        raw = json.loads(response["body"].read())["content"][0]["text"].strip()
+        json_match = re.search(r"\{.*\}", raw, re.DOTALL)
+        if json_match:
+            data = json.loads(json_match.group())
+            if "start_time" in data and "end_time" in data:
+                fmt   = "%Y-%m-%dT%H:%M:%S"
+                start = datetime.strptime(data["start_time"], fmt).replace(tzinfo=timezone.utc).astimezone()
+                end   = datetime.strptime(data["end_time"],   fmt).replace(tzinfo=timezone.utc).astimezone()
+                return (start, end)
+        logger.warning("LLM returned unexpected format: %s", raw)
+    except Exception as exc:
+        logger.error("LLM time fallback failed: %s", exc)
+
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Public interface — used by intent_classifier.py
+# ---------------------------------------------------------------------------
 
 class TimestampResolver:
-    """Resolves time ranges to UTC timestamps and determines index granularity"""
-    
-    # Time range patterns and their durations in days
-    TIME_PATTERNS = {
-        'today': 1,
-        'yesterday': 1,
-        'this_week': 7,
-        'last_week': 7,
-        'this_month': 30,
-        'last_month': 30,
-        'last_3_days': 3,
-        'last_7_days': 7,
-        'last_30_days': 30,
-        'last_hour': 0.04,  # ~1 hour
-        'last_24_hours': 1,
-        'current': 0.04,  # Treated as last_hour
-    }
-    
-    def __init__(self):
-        """Initialize the timestamp resolver"""
-        self.utc = pytz.UTC
-    
-    def resolve_time_range(self, time_range: str = None, comparison_range: str = None) -> Dict[str, Any]:
+    """
+    Resolves a raw user query to UTC millisecond timestamps and index granularity.
+
+    Pipeline per query:
+      1. Deterministic regex / rule-based parsing
+      2. Claude Sonnet LLM fallback  (requires ANTHROPIC_API_KEY)
+      3. Hard fallback: last 1 hour
+    """
+
+    def resolve_time_range(self, query: str) -> Dict[str, Any]:
         """
-        Resolve time range to exact UTC timestamps and determine index granularity
-
-        Logic:
-        - If TimeRange != NULL: Evaluate StartTime and EndTime
-        - Else: Current = Past 1 hour
-
         Args:
-            time_range: Time range string (e.g., "last_7_days", "today") or None
-            comparison_range: Optional comparison range (e.g., "previous_7_days")
+            query: Raw user query, e.g. "show errors in the last 15 minutes"
 
         Returns:
-            Dictionary with resolved timestamps and index information
-        """
-        now = datetime.now(self.utc)
-
-        # If TimeRange is NULL, default to past 1 hour
-        if time_range is None or time_range == "":
-            time_range = "last_hour"
-
-        # Parse primary time range
-        primary_result = self._parse_time_range(time_range, now)
-
-        # Parse comparison range if provided
-        comparison_result = None
-        if comparison_range:
-            comparison_result = self._parse_time_range(comparison_range, now)
-
-        # Determine index based on duration
-        duration_days = primary_result['duration_days']
-        index = self._determine_index(duration_days)
-
-        # Format comparison range if it exists
-        formatted_comparison = None
-        if comparison_result:
-            formatted_comparison = {
-                'time_range': comparison_range,
-                'start_time': self._to_unix_timestamp_ms(comparison_result['start_time']),
-                'end_time': self._to_unix_timestamp_ms(comparison_result['end_time']),
-                'duration_days': comparison_result['duration_days'],
+            {
+                'primary_range': {
+                    'time_range':    str   (the input query),
+                    'start_time':    int   (Unix ms),
+                    'end_time':      int   (Unix ms),
+                    'duration_days': float,
+                },
+                'index':       'HOURLY' | 'DAILY',
+                'index_reason': str,
             }
+        """
+        now = _now()
+
+        result = _parse_deterministic(query)
+        if result:
+            logger.info("Timestamp: deterministic parse succeeded")
+        else:
+            logger.info("Timestamp: deterministic parse failed, trying LLM fallback")
+            result = _parse_with_llm(query)
+
+        if result:
+            start, end = result
+        else:
+            logger.info("Timestamp: LLM fallback unavailable, using default (last 1 hour)")
+            start, end = now - timedelta(hours=1), now
+
+        duration_days = _duration_days(start, end)
+        index = "HOURLY" if duration_days <= 3 else "DAILY"
 
         return {
             'primary_range': {
-                'time_range': time_range,
-                'start_time': self._to_unix_timestamp_ms(primary_result['start_time']),
-                'end_time': self._to_unix_timestamp_ms(primary_result['end_time']),
+                'time_range':    query,
+                'start_time':    _to_ms(start),
+                'end_time':      _to_ms(end),
                 'duration_days': duration_days,
             },
-            'comparison_range': formatted_comparison,
-            'index': index,
-            'index_reason': f"Duration: {duration_days} days → {index} granularity"
-        }
-    
-    def _parse_time_range(self, time_range: str, now: datetime) -> Dict[str, Any]:
-        """
-        Parse a time range string to start and end times
-
-        Supports:
-        - Static ranges: 'today', 'yesterday', 'last_week', etc.
-        - Dynamic ranges: 'past_10_days', 'past_5_hours', 'past_2_weeks', 'past_3_months'
-        """
-        time_range_lower = time_range.lower().strip()
-
-        # Try to parse dynamic time ranges first (e.g., past_10_days, past_5_hours)
-        dynamic_result = self._parse_dynamic_time_range(time_range_lower, now)
-        if dynamic_result:
-            return dynamic_result
-
-        # Static time range patterns
-        if time_range_lower == 'today':
-            start_time = now.replace(hour=0, minute=0, second=0, microsecond=0)
-            end_time = now
-            duration_days = 1
-
-        elif time_range_lower == 'yesterday':
-            yesterday = now - timedelta(days=1)
-            start_time = yesterday.replace(hour=0, minute=0, second=0, microsecond=0)
-            end_time = now.replace(hour=0, minute=0, second=0, microsecond=0)
-            duration_days = 1
-
-        elif time_range_lower == 'this_week':
-            start_time = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=now.weekday())
-            end_time = now
-            duration_days = 7
-
-        elif time_range_lower == 'last_week':
-            end_time = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=now.weekday())
-            start_time = end_time - timedelta(days=7)
-            duration_days = 7
-
-        elif time_range_lower == 'last_3_days':
-            start_time = (now - timedelta(days=3)).replace(hour=0, minute=0, second=0, microsecond=0)
-            end_time = now
-            duration_days = 3
-
-        elif time_range_lower == 'last_7_days':
-            start_time = (now - timedelta(days=7)).replace(hour=0, minute=0, second=0, microsecond=0)
-            end_time = now
-            duration_days = 7
-
-        elif time_range_lower == 'last_30_days':
-            start_time = (now - timedelta(days=30)).replace(hour=0, minute=0, second=0, microsecond=0)
-            end_time = now
-            duration_days = 30
-
-        elif time_range_lower == 'last_month' or time_range_lower == 'this_month':
-            # Last month: 30 days
-            start_time = (now - timedelta(days=30)).replace(hour=0, minute=0, second=0, microsecond=0)
-            end_time = now
-            duration_days = 30
-
-        elif time_range_lower == 'last_hour':
-            start_time = now - timedelta(hours=1)
-            end_time = now
-            duration_days = 0.04
-
-        elif time_range_lower == 'current':
-            # Treat "current" as "last_hour" for practical data fetching
-            start_time = now - timedelta(hours=1)
-            end_time = now
-            duration_days = 0.04
-
-        else:
-            # Default to last_hour (same as "current")
-            start_time = now - timedelta(hours=1)
-            end_time = now
-            duration_days = 0.04
-
-        return {
-            'start_time': start_time,
-            'end_time': end_time,
-            'duration_days': duration_days
+            'index':       index,
+            'index_reason': f"Duration: {duration_days:.2f} days → {index} granularity",
         }
 
-    def _parse_dynamic_time_range(self, time_range: str, now: datetime) -> Dict[str, Any]:
-        """
-        Parse dynamic time ranges like 'past_10_days', 'past_5_hours', 'past_2_weeks', 'past_3_months'
 
-        Patterns supported:
-        - past_N_days / past_N_day
-        - past_N_hours / past_N_hour
-        - past_N_weeks / past_N_week
-        - past_N_months / past_N_month
-
-        Returns:
-            Dictionary with start_time, end_time, duration_days or None if pattern doesn't match
-        """
-        # Regex pattern to match: past_<number>_<unit>
-        # Supports both singular and plural forms
-        pattern = r'past[_\s](\d+)[_\s](day|days|hour|hours|week|weeks|month|months)'
-        match = re.match(pattern, time_range)
-
-        if not match:
-            return None
-
-        number = int(match.group(1))
-        unit = match.group(2)
-
-        # Normalize unit to singular form
-        if unit.endswith('s'):
-            unit = unit[:-1]
-
-        # Calculate start_time, end_time, and duration_days based on unit
-        if unit == 'hour':
-            start_time = now - timedelta(hours=number)
-            end_time = now
-            duration_days = number / 24.0  # Convert hours to days
-
-        elif unit == 'day':
-            start_time = (now - timedelta(days=number)).replace(hour=0, minute=0, second=0, microsecond=0)
-            end_time = now
-            duration_days = number
-
-        elif unit == 'week':
-            days = number * 7
-            start_time = (now - timedelta(days=days)).replace(hour=0, minute=0, second=0, microsecond=0)
-            end_time = now
-            duration_days = days
-
-        elif unit == 'month':
-            days = number * 30  # Approximate month as 30 days
-            start_time = (now - timedelta(days=days)).replace(hour=0, minute=0, second=0, microsecond=0)
-            end_time = now
-            duration_days = days
-
-        else:
-            return None
-
-        return {
-            'start_time': start_time,
-            'end_time': end_time,
-            'duration_days': duration_days
-        }
-    
-    def _determine_index(self, duration_days: float) -> str:
-        """
-        Determine appropriate index granularity based on duration
-
-        Rules:
-        - <= 3 days: HOURLY
-        - > 3 days: DAILY
-        """
-        if duration_days <= 3:
-            return "HOURLY"
-        else:
-            return "DAILY"
-
-    def _format_timestamp(self, dt: datetime) -> str:
-        """
-        Format datetime to simple readable format
-        Format: YYYY-MM-DD HH:MM:SS
-
-        Args:
-            dt: datetime object
-
-        Returns:
-            Formatted timestamp string
-        """
-        return dt.strftime("%Y-%m-%d %H:%M:%S")
-
-    def _to_unix_timestamp_ms(self, dt: datetime) -> int:
-        """
-        Convert datetime to Unix timestamp in milliseconds
-
-        Args:
-            dt: datetime object
-
-        Returns:
-            Unix timestamp in milliseconds
-        """
-        return int(dt.timestamp() * 1000)
-
-
-def main():
-    """Test the timestamp resolver"""
-    resolver = TimestampResolver()
-
-    # Test cases
-    test_cases = [
-        ("today", None),
-        ("last_3_days", "previous_3_days"),
-        ("last_7_days", None),
-        ("last_30_days", None),
-        ("last_hour", None),
-        (None, None),  # Test NULL case - should default to last_hour
-        # Dynamic time ranges
-        ("past_10_days", None),
-        ("past_5_hours", None),
-        ("past_2_weeks", None),
-        ("past_3_months", None),
-        ("past 15 days", None),  # Test with space separator
-    ]
-
-    print("\n" + "="*80)
-    print("TIMESTAMP RESOLUTION TEST")
-    print("="*80)
-
-    for time_range, comparison_range in test_cases:
-        result = resolver.resolve_time_range(time_range, comparison_range)
-        print(f"\n📅 Time Range: {time_range if time_range else 'NULL (defaults to last_hour)'}")
-        print(f"   start_time = {result['primary_range']['start_time']}")
-        print(f"   end_time   = {result['primary_range']['end_time']}")
-        print(f"   index      = {result['index']}")
-        if result['comparison_range']:
-            print(f"\n   Comparison Range:")
-            print(f"   start_time = {result['comparison_range']['start_time']}")
-            print(f"   end_time   = {result['comparison_range']['end_time']}")
-
-    print("\n" + "="*80 + "\n")
-
+# ---------------------------------------------------------------------------
+# CLI / standalone test
+# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    main()
+    import sys
+
+    _test_queries = [
+        "show api failures in the last 15 minutes",
+        "service performance yesterday evening",
+        "show latency between 2pm and 4pm today",
+        "how is my service performing today",
+        "show errors from yesterday 3pm to 6pm",
+        "service performance in the last 30 minutes",
+        "since 5pm",
+        "last night",
+        "day before yesterday",
+        "last working day",
+        "last weekend",
+        "start of the week",
+        "how is my service performing",
+        "performance since this morning",
+        "api errors in the last 10 minutes",
+        "show latency for the last hour",
+        "service health yesterday",
+        "past 24 hours",
+        "this week",
+        "last month",
+        "past 7 days",
+        "past 30 days",
+    ]
+
+    resolver  = TimestampResolver()
+    queries   = [" ".join(sys.argv[1:])] if len(sys.argv) > 1 else _test_queries
+
+    print("\n" + "=" * 70)
+    print("TIMESTAMP RESOLVER TEST")
+    print("=" * 70)
+
+    for q in queries:
+        result = resolver.resolve_time_range(q)
+        pr = result['primary_range']
+        start_dt = datetime.fromtimestamp(pr['start_time'] / 1000, tz=timezone.utc)
+        end_dt   = datetime.fromtimestamp(pr['end_time']   / 1000, tz=timezone.utc)
+        print(f"\nQuery      : {q}")
+        print(f"start_time : {pr['start_time']}  ({start_dt.strftime('%Y-%m-%d %H:%M:%S UTC')})")
+        print(f"end_time   : {pr['end_time']}  ({end_dt.strftime('%Y-%m-%d %H:%M:%S UTC')})")
+        print(f"duration   : {pr['duration_days']:.3f} days")
+        print(f"index      : {result['index']}")
+        print("-" * 70)

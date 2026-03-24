@@ -87,19 +87,6 @@ Your ONLY job is to:
 2. Identify any SECONDARY intents if clearly implied.
 3. Extract ENTITIES such as:
    - service name (if mentioned)
-   - time range (explicit or implicit)
-   - comparison period if present ("vs yesterday", "vs last month")
-
-TIME RANGE EXTRACTION RULES:
-- For static ranges: Use "today", "yesterday", "last_hour", "this_week", "last_week", "last_month"
-- For dynamic ranges: Extract as "past_N_days", "past_N_hours", "past_N_weeks", "past_N_months"
-  Examples:
-  * "past 10 days" → "past_10_days"
-  * "last 5 hours" → "past_5_hours"
-  * "past 2 weeks" → "past_2_weeks"
-  * "past 3 months" → "past_3_months"
-- If time range not mentioned, default to "current"
-- "recently" → "last_hour"
 
 You MUST follow these rules strictly:
 
@@ -107,7 +94,6 @@ RULES:
 - Return ONLY valid JSON. No explanation text.
 - Do NOT guess application, tenant, or IDs.
 - If service is unclear, set service = null.
-- If time range not mentioned, default to "current".
 - Use ONLY intents from the allowed list.
 - Be conservative. If unsure, choose the closest high-level intent.
 
@@ -129,9 +115,7 @@ ALLOWED PRIMARY INTENTS:
   "primary_intent": "<ONE_ALLOWED_INTENT>",
   "secondary_intents": [],
   "entities": {
-    "service": null,
-    "time_range": "current",
-    "comparison_range": null
+    "service": null
   }
 }
 
@@ -139,10 +123,6 @@ IMPORTANT:
 - primary_intent: Must be a single intent from the allowed list
 - secondary_intents: Array of related intents that should be auto-included (from enrichment rules)
 - entities.service: Service name if mentioned, otherwise null
-- entities.time_range: Time range examples:
-  * Static: "current", "today", "yesterday", "last_hour", "this_week", "last_week", "last_month"
-  * Dynamic: "past_10_days", "past_5_hours", "past_2_weeks", "past_3_months"
-- entities.comparison_range: Comparison period if mentioned, otherwise null
 
 NOTE: Do NOT include data_sources in your response. Data sources will be determined automatically based on the intents.
 
@@ -239,7 +219,7 @@ Return ONLY the JSON object. No additional text.
             Dictionary containing:
             - primary_intent: The main detected intent
             - secondary_intents: Related intents from enrichment rules
-            - entities: Extracted entities (service, time_range, comparison_range)
+            - entities: Extracted entities (service)
             - data_sources: Required data sources
             - enrichment_details: Details of which enrichments came from the primary intent
             - timestamp_resolution: Resolved UTC timestamps and index granularity
@@ -254,9 +234,7 @@ Return ONLY the JSON object. No additional text.
                 "primary_intent": None,
                 "secondary_intents": [],
                 "entities": {
-                    "service": None,
-                    "time_range": "current",
-                    "comparison_range": None
+                    "service": None
                 },
                 "data_sources": [],
                 "enrichment_details": {},
@@ -265,16 +243,10 @@ Return ONLY the JSON object. No additional text.
 
         primary_intent = llm_result.get('primary_intent')
         secondary_intents = llm_result.get('secondary_intents', [])
-        entities = llm_result.get('entities', {
-            "service": None,
-            "time_range": "current",
-            "comparison_range": None
-        })
+        entities = llm_result.get('entities', {"service": None})
 
-        # Resolve timestamps from entities
-        time_range = entities.get('time_range', 'current')
-        comparison_range = entities.get('comparison_range')
-        timestamp_resolution = self.timestamp_resolver.resolve_time_range(time_range, comparison_range)
+        # Resolve timestamps directly from the raw user query
+        timestamp_resolution = self.timestamp_resolver.resolve_time_range(user_query)
 
         # Combine primary and secondary intents for enrichment
         all_intents = [primary_intent] + secondary_intents if primary_intent else secondary_intents
@@ -322,8 +294,6 @@ Return ONLY the JSON object. No additional text.
         print(f"\n📍 Entities Extracted:")
         entities = result.get('entities', {})
         print(f"   • Service: {entities.get('service', 'N/A')}")
-        print(f"   • Time Range: {entities.get('time_range', 'current')}")
-        print(f"   • Comparison Range: {entities.get('comparison_range', 'N/A')}")
 
         # Print timestamp resolution
         self._print_timestamp_resolution(result.get('timestamp_resolution'))
@@ -360,17 +330,11 @@ Return ONLY the JSON object. No additional text.
             return
 
         print(f"\n⏱️  Step 3: Time Range Resolution")
-        print(f"   From Entities ex. time_range: \"{timestamp_resolution['primary_range']['time_range']}\"")
+        print(f"   Query: \"{timestamp_resolution['primary_range']['time_range']}\"")
         print(f"\n   Python converts:")
         print(f"      start_time = {timestamp_resolution['primary_range']['start_time']}")
         print(f"      end_time   = {timestamp_resolution['primary_range']['end_time']}")
         print(f"      index      = {timestamp_resolution['index']}")
-
-        if timestamp_resolution['comparison_range']:
-            comp = timestamp_resolution['comparison_range']
-            print(f"\n   Comparison Range:")
-            print(f"      start_time = {comp['start_time']}")
-            print(f"      end_time   = {comp['end_time']}")
 
         print(f"\n   Reason: {timestamp_resolution['index_reason']}")
 
