@@ -15,7 +15,7 @@ AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
 AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
 BEDROCK_MODEL_ID = os.getenv(
     "BEDROCK_MODEL_ID",
-    "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
+    "global.anthropic.claude-sonnet-4-6"
 )
 
 # ── Layer 1 LLM (intent classification) ───────────────────────────────────────

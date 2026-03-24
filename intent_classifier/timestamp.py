@@ -412,7 +412,7 @@ def _parse_with_llm(query: str) -> Optional[tuple[datetime, datetime]]:
             "messages": [{"role": "user", "content": user_msg}],
         }
         response      = client.invoke_model(
-            modelId=os.getenv("BEDROCK_MODEL_ID", "global.anthropic.claude-sonnet-4-5-20250929-v1:0"),
+            modelId=os.getenv("BEDROCK_MODEL_ID", "global.anthropic.claude-sonnet-4-6"),
             body=json.dumps(request_body),
         )
         raw = json.loads(response["body"].read())["content"][0]["text"].strip()

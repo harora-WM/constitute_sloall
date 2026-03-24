@@ -2,7 +2,7 @@
 
 ## 🎯 System Overview
 
-A fully conversational SLO analysis system that uses AWS Bedrock Claude Sonnet 4.5 at TWO layers:
+A fully conversational SLO analysis system that uses AWS Bedrock Claude Sonnet 4.6 at TWO layers:
 1. **Intent Classification Layer** - Understands what the user is asking
 2. **Response Generation Layer** - Generates natural language answers from data
 
@@ -25,7 +25,7 @@ A fully conversational SLO analysis system that uses AWS Bedrock Claude Sonnet 4
 │   STEP 1: INTENT CLASSIFICATION    │  │   STEP 2: SERVICE RESOLUTION       │
 │   (intent_classifier.py)           │  │   (service_matcher.py)             │
 │                                    │  │                                    │
-│   AWS Bedrock Claude 4.5           │  │   Fuzzy matching                   │
+│   AWS Bedrock Claude 4.6           │  │   Fuzzy matching                   │
 │   ↓                                │  │   services.yaml lookup             │
 │   • Primary Intent                 │  │   ↓                                │
 │   • Secondary Intents              │  │   service_name → service_id        │
@@ -85,7 +85,7 @@ A fully conversational SLO analysis system that uses AWS Bedrock Claude Sonnet 4
 │           STEP 4: CONVERSATIONAL RESPONSE GENERATION                         │
 │                   (llm_response_generator.py)                                │
 │                                                                              │
-│   AWS Bedrock Claude 4.5 (SECOND LLM CALL)                                  │
+│   AWS Bedrock Claude 4.6 (SECOND LLM CALL)                                  │
 │                                                                              │
 │   Input: Complete orchestrator output + System Prompt                       │
 │                                                                              │
@@ -139,7 +139,7 @@ A fully conversational SLO analysis system that uses AWS Bedrock Claude Sonnet 4
 
 ### 2. Intent Classifier (`intent_classifier/intent_classifier.py`)
 **Role:** Understand user intent
-- **LLM:** AWS Bedrock Claude Sonnet 4.5
+- **LLM:** AWS Bedrock Claude Sonnet 4.6
 - **Input:** User query
 - **Output:**
   - Primary intent
@@ -182,7 +182,7 @@ A fully conversational SLO analysis system that uses AWS Bedrock Claude Sonnet 4
 
 ### 6. LLM Response Generator (`llm_response_generator.py`)
 **Role:** Generate conversational responses
-- **LLM:** AWS Bedrock Claude Sonnet 4.5 (SECOND call)
+- **LLM:** AWS Bedrock Claude Sonnet 4.6 (SECOND call)
 - **Input:** Complete orchestrator output
 - **Output:** Natural language response
 
@@ -383,7 +383,7 @@ The system is working correctly when:
 AWS_REGION=ap-south-1
 AWS_ACCESS_KEY_ID=your_key
 AWS_SECRET_ACCESS_KEY=your_secret
-BEDROCK_MODEL_ID=global.anthropic.claude-sonnet-4-5-20250929-v1:0
+BEDROCK_MODEL_ID=global.anthropic.claude-sonnet-4-6
 
 # Intent Classification
 MAX_TOKENS=500

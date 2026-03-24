@@ -1,6 +1,6 @@
 # Conversational SLO Manager
 
-An AI-powered SLO orchestration system that uses AWS Bedrock Claude Sonnet 4.5 to analyze natural language queries about service reliability and fetch data from multiple sources.
+An AI-powered SLO orchestration system that uses AWS Bedrock Claude Sonnet 4.6 to analyze natural language queries about service reliability and fetch data from multiple sources.
 
 ## Quick Start
 
@@ -23,7 +23,7 @@ Create or update `.env` file with your credentials:
 AWS_REGION=ap-south-1
 AWS_ACCESS_KEY_ID=your_access_key
 AWS_SECRET_ACCESS_KEY=your_secret_key
-BEDROCK_MODEL_ID=global.anthropic.claude-sonnet-4-5-20250929-v1:0
+BEDROCK_MODEL_ID=global.anthropic.claude-sonnet-4-6
 
 # LLM Parameters
 MAX_TOKENS=500
@@ -56,7 +56,7 @@ User Query (query, app_id, project_id)
     ↓
 Orchestrator (main.py)
     ↓
-Intent Classifier (AWS Bedrock Claude 4.5)
+Intent Classifier (AWS Bedrock Claude 4.6)
     ↓
 Intent + Entities + Data Sources + Timestamps
     ↓
@@ -66,7 +66,7 @@ Intent + Entities + Data Sources + Timestamps
 │  always-on:    alerts_count, change_impact              │
 └─────────────────────────────────────────────────────────┘
     ↓
-LLM Response Generator (AWS Bedrock Claude 4.5)
+LLM Response Generator (AWS Bedrock Claude 4.6)
     ↓
 Conversational Response + JSON Export
 ```

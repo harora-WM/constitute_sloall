@@ -1,7 +1,7 @@
 """
 LLM Response Generator
 Converts orchestrator output into conversational natural language responses
-Uses AWS Bedrock Claude Sonnet 4.5 to analyze SLO data and answer user queries
+Uses AWS Bedrock Claude Sonnet 4.6 to analyze SLO data and answer user queries
 """
 
 import json

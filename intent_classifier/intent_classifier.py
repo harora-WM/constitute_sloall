@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Intent Classifier for Conversational SLO Manager
-Uses AWS Bedrock Claude Sonnet 4.5 to classify user queries into intents and determine data sources
+Uses AWS Bedrock Claude Sonnet 4.6 to classify user queries into intents and determine data sources
 """
 
 import os
@@ -42,7 +42,7 @@ class IntentClassifier:
         )
 
         # Model configuration
-        self.model_id = os.getenv('BEDROCK_MODEL_ID', 'global.anthropic.claude-sonnet-4-5-20250929-v1:0')
+        self.model_id = os.getenv('BEDROCK_MODEL_ID', 'global.anthropic.claude-sonnet-4-6')
         self.max_tokens = int(os.getenv('MAX_TOKENS', '500'))
         self.temperature = float(os.getenv('TEMPERATURE', '0.0'))
 
@@ -134,7 +134,7 @@ Return ONLY the JSON object. No additional text.
     def _call_bedrock(self, user_query: str) -> Dict[str, Any]:
         """Call AWS Bedrock to classify intent and extract entities"""
         try:
-            # Prepare the request body for Claude Sonnet 4.5
+            # Prepare the request body for Claude Sonnet 4.6
             request_body = {
                 "anthropic_version": "bedrock-2023-05-31",
                 "max_tokens": self.max_tokens,

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-A **Conversational SLO (Service Level Objective) Manager** using AWS Bedrock Claude Sonnet 4.5 in a **two-layer LLM architecture**: intent classification → multi-source data fetching → conversational response generation.
+A **Conversational SLO (Service Level Objective) Manager** using AWS Bedrock Claude Sonnet 4.6 in a **two-layer LLM architecture**: intent classification → multi-source data fetching → conversational response generation.
 
 ## Development Commands
 
@@ -130,7 +130,7 @@ All configuration lives in `.env` and is loaded centrally by `config.py`. No cre
 AWS_REGION=ap-south-1
 AWS_ACCESS_KEY_ID=your_key
 AWS_SECRET_ACCESS_KEY=your_secret
-BEDROCK_MODEL_ID=global.anthropic.claude-sonnet-4-5-20250929-v1:0
+BEDROCK_MODEL_ID=global.anthropic.claude-sonnet-4-6
 
 # Layer 1 LLM (intent classification)
 MAX_TOKENS=500
