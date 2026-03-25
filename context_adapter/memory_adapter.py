@@ -41,7 +41,8 @@ def fetch_behavior_service_memory(
     start_time: int,
     end_time: int,
     app_id: int,
-    sid: Optional[str] = None
+    sid: Optional[str] = None,
+    service_id: Optional[int] = None
 ) -> List[Dict[str, Any]]:
     """
     Fetch behavior service memory records from ClickHouse for specific application and service
@@ -53,7 +54,8 @@ def fetch_behavior_service_memory(
         start_time: Start time in Unix milliseconds (not used for filtering)
         end_time: End time in Unix milliseconds (not used for filtering)
         app_id: Application ID
-        sid: Service name (optional - if None, fetches all services for the app)
+        sid: Service name (optional - fallback filter if service_id not provided)
+        service_id: Resolved service ID from service_matcher (preferred filter)
 
     Returns:
         List of ALL behavior memory records for the application
@@ -62,18 +64,18 @@ def fetch_behavior_service_memory(
     clickhouse_url = config.CLICKHOUSE_URL
     auth = (config.CLICKHOUSE_USERNAME, config.CLICKHOUSE_PASSWORD)
 
-    # Build WHERE clause - only filter by app_id and optionally service
-    # NO time-based filtering - returns all historical patterns
-    where_clause = f"""
-    WHERE application_id = {app_id}
-    """
+    # Build WHERE clause - filter by app_id and service_id (preferred) or service name
+    where_clause = f"WHERE application_id = {app_id}"
 
-    if sid:
+    if service_id is not None:
+        where_clause += f"\n      AND service_id = {service_id}"
+    elif sid:
         where_clause += f"\n      AND service = '{sid}'"
 
     query = f"""
     SELECT
         application_id,
+        service_id,
         service,
         metric,
         baseline_state,
@@ -165,7 +167,7 @@ def transform_behavior_memory(
 
     # Define required fields
     REQUIRED_FIELDS = [
-        "application_id", "service", "metric", "baseline_state", "baseline_value",
+        "application_id", "service_id", "service", "metric", "baseline_state", "baseline_value",
         "pattern_type", "pattern_window", "delta_success", "delta_latency_p90",
         "support_days", "confidence", "first_seen", "last_seen", "detected_at"
     ]
@@ -188,6 +190,7 @@ def transform_behavior_memory(
 
             patterns.append({
                 "application_id": r["application_id"],
+                "service_id": r["service_id"],
                 "service": r["service"],
                 "metric": r["metric"],
                 "baseline_state": r["baseline_state"],
@@ -281,7 +284,8 @@ def fetch_patterns_by_intent(
     print("   Fetching all behavior patterns from ai_service_behavior_memory")
 
     # Fetch all behavior memory records for the given time range and app_id
-    rows = fetch_behavior_service_memory(start_time, end_time, app_id, service_name)
+    # Prefer service_id filter (exact match) over raw service_name
+    rows = fetch_behavior_service_memory(start_time, end_time, app_id, service_name, service_id)
 
     # Transform to LLM-ready format
     result = transform_behavior_memory(rows, start_time, end_time, app_id, service_name)
