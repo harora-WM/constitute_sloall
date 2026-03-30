@@ -27,6 +27,12 @@ with st.sidebar:
     project_id = st.number_input("Project ID", value=215853, step=1)
 
     st.divider()
+    st.subheader("Time Override")
+    st.caption("Leave blank to auto-extract from query.")
+    start_time_input = st.text_input("Start Time (Unix ms)", value="", placeholder="e.g. 1774432047000")
+    end_time_input = st.text_input("End Time (Unix ms)", value="", placeholder="e.g. 1774518447000")
+
+    st.divider()
 
     # Health check
     if st.button("Check backend health"):
@@ -97,9 +103,15 @@ if query:
     with st.chat_message("assistant"):
         with st.spinner("Analysing..."):
             try:
+                payload = {"query": query, "app_id": int(app_id), "project_id": int(project_id)}
+                if start_time_input.strip():
+                    payload["start_time"] = int(start_time_input.strip())
+                if end_time_input.strip():
+                    payload["end_time"] = int(end_time_input.strip())
+
                 response = requests.post(
                     f"{api_base}/query",
-                    json={"query": query, "app_id": int(app_id), "project_id": int(project_id)},
+                    json=payload,
                     timeout=60,
                 )
 

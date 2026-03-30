@@ -9,6 +9,8 @@ class QueryRequest(BaseModel):
                        description="Natural language SLO query")
     app_id: int = Field(default=31854, description="Application ID")
     project_id: int = Field(default=215853, description="Project ID")
+    start_time: Optional[int] = Field(default=None, description="Start time in Unix epoch milliseconds (e.g. 1774432047000). Only used when the query contains no time reference; ignored if the query mentions a time expression.")
+    end_time: Optional[int] = Field(default=None, description="End time in Unix epoch milliseconds. Only used when the query contains no time reference; ignored if the query mentions a time expression.")
 
 
 # ── Sub-models mirroring orchestrator output ───────────────────────────────────

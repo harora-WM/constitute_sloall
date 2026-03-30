@@ -28,9 +28,6 @@ python fetch_services.py
 # Test all adapters end-to-end (requires live credentials)
 python test_new_adapters.py
 
-# Test hybrid timestamp extraction across 89 queries (no credentials needed for regex stage)
-python run_check.py
-
 # Test components individually
 python utils/service_matcher.py "dashboard-stats"
 python llm_response_generator.py
@@ -51,7 +48,7 @@ cd context_adapter && python change_pre_post.py
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/health` | Liveness/readiness probe. Returns 503 if orchestrator failed to initialize. |
-| POST | `/query` | Submit a natural language SLO query. Body: `QueryRequest` (`query`, `app_id`, `project_id`). Typical latency: 8–15s (two LLM calls + sequential data fetches). |
+| POST | `/query` | Submit a natural language SLO query. Body: `QueryRequest` (`query`, `app_id`, `project_id`, optional `start_time`, `end_time` in Unix epoch ms). `start_time`/`end_time` are only used when the query contains no time reference; if the query mentions a time expression they are ignored entirely. A minimum 1-hour gap is always enforced. `index` is always auto-calculated (`>3 days → DAILY`, else `HOURLY`). Typical latency: 8–15s (two LLM calls + sequential data fetches). |
 
 **Do NOT run FastAPI with more than 1 worker** — boto3 clients are stateful and multiple workers cause Bedrock rate limit issues. Always use `--workers 1`.
 
@@ -98,13 +95,13 @@ User Query
 
 **`llm_response_generator.py`** — Layer 2 LLM (AWS Bedrock). Receives complete orchestrator output and generates a conversational response as "SLO Advisor". System prompt defines interpretation of health status, burn rates, pattern types, and deviation data.
 
-**`api_models.py`** — Pydantic v2 request/response models. `QueryRequest` takes `query`, `app_id` (default `31854`), and `project_id` (default `215853`). `data` field in `QueryResponse` is `Dict[str, Any]` since each adapter returns a different schema.
+**`api_models.py`** — Pydantic v2 request/response models. `QueryRequest` takes `query`, `app_id` (default `31854`), `project_id` (default `215853`), and optional `start_time`/`end_time` (Unix epoch ms, default `None`). `data` field in `QueryResponse` is `Dict[str, Any]` since each adapter returns a different schema.
 
 **`utils/service_matcher.py`** — Fuzzy matching via `SequenceMatcher`. Loads `services.yaml` (125 services). Threshold: 0.3; substring matches boosted to 0.7. Returns ranked results with similarity scores.
 
 **`intent_classifier/timestamp.py`** — Converts the raw user query directly to UTC millisecond timestamps using a **hybrid three-stage approach**: (1) deterministic regex/rule-based parsing, (2) Claude Sonnet LLM fallback for complex/ambiguous expressions, (3) hard fallback to last 1 hour. Determines index granularity: HOURLY (<=3 days), DAILY (>3 days). Called with the raw query string, not an LLM-extracted label.
 
-**`app.py`** — Streamlit chat UI. Talks to the FastAPI backend at `http://localhost:8000`. Renders the conversational response as markdown; shows intent, resolved time range, index, and per-source stats in a collapsible "Technical details" expander. App ID and Project ID are configurable from the sidebar.
+**`app.py`** — Streamlit chat UI. Talks to the FastAPI backend at `http://localhost:8000`. Renders the conversational response as markdown; shows intent, resolved time range, index, and per-source stats in a collapsible "Technical details" expander. App ID, Project ID, and optional Start/End Time override (Unix ms) are configurable from the sidebar.
 
 ## Data Sources
 
@@ -197,6 +194,8 @@ OPENSEARCH_PAGE_SIZE=5000
 **Import errors on startup:** Ensure `__init__.py` files exist in `intent_classifier/`, `context_adapter/`, and `utils/`.
 
 **`context_adapter/intent_based_queries.py`** is no longer used — `memory_adapter.py` now fetches all patterns directly without intent-based dispatch. The file still exists in the repo but is not imported anywhere.
+
+**`start_time`/`end_time` from API are only a fallback:** They are used only when the query contains no time reference (`timestamp source == "fallback"`). If the query mentions any time expression (regex or LLM matched), these fields are ignored regardless of their value. A minimum 1-hour gap between `start_time` and `end_time` is always enforced after resolution.
 
 **`change_pre_post` ignores query time window:** It always fetches the single latest release from the API (sorted by date) and uses that release's `dateTimeMillis` as the anchor. The user's query start/end time is never passed to this adapter.
 

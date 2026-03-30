@@ -76,7 +76,8 @@ class SLOOrchestrator:
         self.java_stats_username = config.USERNAME
         self.java_stats_password = config.PASSWORD
 
-    def process_query(self, user_query: str, app_id: int = None, project_id: int = None) -> Dict[str, Any]:
+    def process_query(self, user_query: str, app_id: int = None, project_id: int = None,
+                      start_time: int = None, end_time: int = None) -> Dict[str, Any]:
         """
         Process a user query end-to-end
 
@@ -132,9 +133,33 @@ class SLOOrchestrator:
             }
 
         primary_range = timestamp_resolution.get('primary_range', {})
-        start_time = primary_range.get('start_time')
-        end_time = primary_range.get('end_time')
-        index = timestamp_resolution.get('index')
+        ts_source = timestamp_resolution.get('source', 'fallback')
+
+        # Priority: query-derived timestamps always win when the query mentions time.
+        # API-provided start_time/end_time are only used when the query had no time reference (source == 'fallback').
+        if ts_source != 'fallback':
+            # Query contained a time expression — ignore API-provided values
+            start_time = primary_range.get('start_time')
+            end_time   = primary_range.get('end_time')
+        else:
+            # No time in query — use API-provided values if given, else keep the 1-hour fallback
+            if not start_time:
+                start_time = primary_range.get('start_time')
+            if not end_time:
+                end_time = primary_range.get('end_time')
+
+        # Enforce minimum 1-hour gap
+        ONE_HOUR_MS = 60 * 60 * 1000
+        if start_time is not None and end_time is not None:
+            if (end_time - start_time) < ONE_HOUR_MS:
+                end_time = start_time + ONE_HOUR_MS
+
+        if start_time is not None and end_time is not None:
+            # Always auto-calculate index from the final start/end
+            duration_days = (end_time - start_time) / (1000 * 60 * 60 * 24)
+            index = 'DAILY' if duration_days > 3 else 'HOURLY'
+        else:
+            index = timestamp_resolution.get('index')
 
         print(f"\n📊 Step 2: Fetching data from adapters...")
         print(f"   Data Sources: {', '.join(data_sources)}")
@@ -720,11 +745,14 @@ def run_query(body: QueryRequest):
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Orchestrator not initialized",
         )
-    logger.info(f"Query: {body.query!r}, app_id={body.app_id}, project_id={body.project_id}")
+    logger.info(f"Query: {body.query!r}, app_id={body.app_id}, project_id={body.project_id}, "
+                f"start_time={body.start_time}, end_time={body.end_time}")
     result = _orchestrator.process_query(
         user_query=body.query,
         app_id=body.app_id,
         project_id=body.project_id,
+        start_time=body.start_time,
+        end_time=body.end_time,
     )
     if not result.get("success"):
         raise HTTPException(

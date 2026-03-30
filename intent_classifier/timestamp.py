@@ -467,9 +467,14 @@ class TimestampResolver:
         result = _parse_deterministic(query)
         if result:
             logger.info("Timestamp: deterministic parse succeeded")
+            source = "deterministic"
         else:
             logger.info("Timestamp: deterministic parse failed, trying LLM fallback")
             result = _parse_with_llm(query)
+            if result:
+                source = "llm"
+            else:
+                source = "fallback"
 
         if result:
             start, end = result
@@ -489,6 +494,7 @@ class TimestampResolver:
             },
             'index':       index,
             'index_reason': f"Duration: {duration_days:.2f} days → {index} granularity",
+            'source':      source,
         }
 
 
