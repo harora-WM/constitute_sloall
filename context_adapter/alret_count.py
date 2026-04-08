@@ -167,9 +167,10 @@ def fetch_alerts_for_orchestrator(
     Returns:
         Dictionary with alerts count data in orchestrator-compatible format, or None if failed
     """
-    # Build application SLO filters for the given app_id
+    # Build application SLO filters using project_id
+    # Note: app_id filter returns 0 results — alerts are indexed by project_id (sid)
     application_slo_filters = [
-        {"id": app_id, "sloTypes": ["ERROR", "RESPONSE"]}
+        {"id": project_id, "sloTypes": ["ERROR", "RESPONSE"]}
     ]
 
     # Fetch the data
@@ -192,6 +193,7 @@ def fetch_alerts_for_orchestrator(
             "start_time": start_time_ms,
             "end_time": end_time_ms,
             "app_id": app_id,
+            "project_id": project_id,
             "slo_types": ["ERROR", "RESPONSE"]
         },
         "alerts_count": response_payload,

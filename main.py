@@ -149,10 +149,12 @@ class SLOOrchestrator:
                 end_time = primary_range.get('end_time')
 
         # Enforce minimum 1-hour gap
+        # If gap is too small, shift start backwards (not end forwards) so we
+        # always query a completed historical window rather than a future one.
         ONE_HOUR_MS = 60 * 60 * 1000
         if start_time is not None and end_time is not None:
             if (end_time - start_time) < ONE_HOUR_MS:
-                end_time = start_time + ONE_HOUR_MS
+                start_time = end_time - ONE_HOUR_MS
 
         if start_time is not None and end_time is not None:
             # Always auto-calculate index from the final start/end

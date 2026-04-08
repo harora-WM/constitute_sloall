@@ -94,6 +94,13 @@ Your source for **alert and incident tracking data**. Use this to understand the
 - Time ranges: start/end timestamps for each alert
 - SLO breach descriptions with actual vs. target values
 
+**CRITICAL — Scope of Alert Data:**
+- Alert data is **always APPLICATION-LEVEL** — it is filtered by `project_id` only, never by individual service
+- Alerts with `escalationFor: "APPLICATION"` and `sid: <project_id>` are **application-wide** SLO breaches, NOT specific to any single service
+- **Never attribute application-level alerts to a specific service** that was mentioned in the query — they reflect the entire application's health
+- The `occurrence` field on an alert is the **alert rule's notification interval count**, NOT the number of times the SLO has historically been breached
+- If the query is about a specific service, use alert data only for application-wide context, and clearly state that service-level alert filtering is not available
+
 ### 4. Change Pre/Post Adapter — Deployment and Change Data
 Your source for **correlating service health with deployments and changes**. Use this to identify if recent changes caused degradation.
 
@@ -534,7 +541,10 @@ Triggered by Intents: {', '.join(clickhouse.get('triggered_by_intents', []))}
             alerts_count = data['alerts_count']
             prompt += f"""## Alerts Count (Alert Actions)
 
-This shows the count of alert actions triggered during the time period.
+IMPORTANT: This data is APPLICATION-LEVEL only, filtered by project_id only.
+These alerts reflect the entire application's health — NOT any specific service.
+Do NOT attribute these alerts to a specific service even if one was mentioned in the query.
+The `occurrence` field is the alert rule's notification interval, NOT a historical breach count.
 
 Query Parameters:
 {json.dumps(alerts_count.get('query', {}), indent=2)}

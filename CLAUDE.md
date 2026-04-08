@@ -65,7 +65,7 @@ User Query
       Fuzzy match service name -> service_id using services.yaml
   -> Step 3: Data Fetching (sequential)
       java_stats_api  -- if 'java_stats_api' in data_sources (intent-routed)
-      clickhouse      -- if 'clickhouse' in data_sources (all all patterns, no filtering)
+      clickhouse      -- if 'clickhouse' in data_sources (all patterns, no filtering)
       alerts_count    -- ALWAYS fetched (regardless of intent)
       change_impact   -- ALWAYS fetched (regardless of intent)
   -> Step 4: Conversational Response (LLM Call #2, llm_response_generator.py)
@@ -195,11 +195,11 @@ OPENSEARCH_PAGE_SIZE=5000
 
 **`context_adapter/intent_based_queries.py`** is no longer used — `memory_adapter.py` now fetches all patterns directly without intent-based dispatch. The file still exists in the repo but is not imported anywhere.
 
-**`start_time`/`end_time` from API are only a fallback:** They are used only when the query contains no time reference (`timestamp source == "fallback"`). If the query mentions any time expression (regex or LLM matched), these fields are ignored regardless of their value. A minimum 1-hour gap between `start_time` and `end_time` is always enforced after resolution.
+**`start_time`/`end_time` from API are only a fallback:** They are used only when the query contains no time reference (`timestamp source == "fallback"`). If the query mentions any time expression (regex or LLM matched), these fields are ignored regardless of their value. A minimum 1-hour gap is always enforced after resolution by shifting `start_time` backwards (`start = end - 1 hour`) — not forwards — so the query always covers a completed historical window rather than a future one.
 
 **`change_pre_post` ignores query time window:** It always fetches the single latest release from the API (sorted by date) and uses that release's `dateTimeMillis` as the anchor. The user's query start/end time is never passed to this adapter.
 
-**`alret_count` via orchestrator uses app-level filter only:** `fetch_alerts_for_orchestrator()` always sends `[{"id": app_id, "sloTypes": ["ERROR", "RESPONSE"]}]` — just one app-level filter. The `__main__` block uses more granular per-service filters for standalone testing only.
+**`alret_count` via orchestrator uses `project_id` filter only:** `fetch_alerts_for_orchestrator()` sends `[{"id": project_id, "sloTypes": ["ERROR", "RESPONSE"]}]`. The API requires `project_id` (215853) — using only `app_id` (31854) returns 0 results because all alerts are indexed by `sid: project_id`. The `app_id` is retained in the returned query metadata for traceability only. The `__main__` block uses more granular per-service filters for standalone testing only.
 
 **`TimestampResolver` class docstring says "requires ANTHROPIC_API_KEY":** This is wrong. The LLM fallback in `timestamp.py` uses `AWS_ACCESS_KEY_ID` via boto3/Bedrock, exactly like the intent classifier. The env var name in the docstring is stale.
 
