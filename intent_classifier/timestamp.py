@@ -153,6 +153,10 @@ def _parse_deterministic(query: str) -> Optional[tuple[datetime, datetime]]:
 
     # ── Special named ranges ────────────────────────────────────────────────
 
+    # "right now" / "at the moment" / "currently" → last 1 hour
+    if re.search(r"\b(right\s+now|at\s+(the\s+)?moment|currently|at\s+present|as\s+of\s+now)\b", q):
+        return (now - timedelta(hours=1), now)
+
     if re.search(r"\bday before yesterday\b", q):
         return (today - timedelta(days=2),
                 today - timedelta(days=1) - timedelta(seconds=1))
