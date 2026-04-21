@@ -33,8 +33,9 @@ from context_adapter.java_stats import (
     get_error_budget_status
 )
 from context_adapter.memory_adapter import fetch_behavior_service_memory, transform_behavior_memory, fetch_patterns_by_intent
-from context_adapter.alret_count import fetch_alerts_for_orchestrator
+from context_adapter.alert_count import fetch_alerts_for_orchestrator
 from context_adapter.change_pre_post import fetch_change_impact_for_orchestrator
+from context_adapter.infra_adapter import fetch_infra_for_orchestrator
 from utils.service_matcher import ServiceMatcher
 from llm_response_generator import LLMResponseGenerator
 
@@ -220,6 +221,21 @@ class SLOOrchestrator:
             else:
                 print("   ⚠️  ClickHouse returned no data\n")
 
+        # Fetch from ClickHouse infra_data (separate table, separate adapter)
+        if 'clickhouse_infra' in data_sources:
+            print("   → Fetching from ClickHouse (infra metrics)...")
+            infra_data = self._fetch_infra_adapter(
+                start_time=start_time,
+                end_time=end_time,
+                app_id=effective_app_id,
+                project_id=effective_project_id
+            )
+            if infra_data:
+                adapter_data['clickhouse_infra'] = infra_data
+                print("   ✅ Infra metrics retrieved\n")
+            else:
+                print("   ⚠️  Infra adapter returned no data\n")
+
         # Fetch from Alerts Count API (always fetch regardless of intent)
         print("   → Fetching from Alerts Count API...")
         alerts_data = self._fetch_alerts_count(
@@ -230,7 +246,11 @@ class SLOOrchestrator:
         )
         if alerts_data:
             adapter_data['alerts_count'] = alerts_data
-            print("   ✅ Alerts Count data retrieved\n")
+            alert_summary = alerts_data.get('alerts_count', {}).get('alert', {}) if isinstance(alerts_data.get('alerts_count'), dict) else {}
+            total = alert_summary.get('totalCount')
+            open_c = alert_summary.get('openCount')
+            closed = alert_summary.get('closedCount')
+            print(f"   ✅ Alerts Count data retrieved (total: {total}, open: {open_c}, closed: {closed})\n")
         else:
             print("   ⚠️  Alerts Count API returned no data\n")
 
@@ -495,6 +515,36 @@ class SLOOrchestrator:
 
         except Exception as e:
             print(f"   ✗ Error fetching ClickHouse data: {e}")
+            return None
+
+    def _fetch_infra_adapter(
+        self,
+        start_time: int,
+        end_time: int,
+        app_id: int,
+        project_id: int
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Fetch infrastructure metrics from ClickHouse infra_data table.
+
+        Args:
+            start_time: Start time in milliseconds
+            end_time: End time in milliseconds
+            app_id: Application ID
+            project_id: Project ID
+
+        Returns:
+            Infra metrics envelope or None if failed
+        """
+        try:
+            return fetch_infra_for_orchestrator(
+                app_id=app_id,
+                project_id=project_id,
+                start_time=start_time,
+                end_time=end_time
+            )
+        except Exception as e:
+            print(f"   ✗ Error fetching infra metrics: {e}")
             return None
 
     def _fetch_alerts_count(

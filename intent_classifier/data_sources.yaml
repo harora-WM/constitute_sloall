@@ -35,6 +35,17 @@ data_sources:
     pool_size: 5
     compression: true
 
+  clickhouse_infra:
+    type: analytical_database
+    description: "Host-level infrastructure metrics (CPU, memory, disk) from dedicated ClickHouse table, collected by SolarWinds and Zabbix"
+    capabilities:
+      - cpu_metrics
+      - memory_metrics
+      - disk_metrics
+      - resource_trend
+    pool_size: 5
+    compression: true
+
   opensearch:
     type: search_engine
     description: "Logs, traces, and full-text search"
@@ -89,3 +100,6 @@ intent_data_sources:
     - opensearch
     - postgres
     - clickhouse
+
+  INFRA:
+    - clickhouse_infra

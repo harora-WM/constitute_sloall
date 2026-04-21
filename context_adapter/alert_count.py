@@ -142,6 +142,13 @@ def main(
         json.dump(output, file, indent=2)
 
     print(f"Saved alerts-action count response to {output_file}")
+    alert = response_payload.get("alert", {}) if isinstance(response_payload, dict) else {}
+    print(
+        f"Alerts — total: {alert.get('totalCount')} | "
+        f"open: {alert.get('openCount')} | "
+        f"closed: {alert.get('closedCount')} | "
+        f"reoccurring: {alert.get('reoccuringCount')}"
+    )
     return 0
 
 
@@ -208,14 +215,12 @@ if __name__ == "__main__":
     # Configuration parameters
     username = config.USERNAME
     password = config.PASSWORD
-    start_date = "1771957800000"
-    end_date = "1773340200000"
+    start_date = "1773426600000"
+    end_date = "1776191400000"
     application_slo_filters = [
         {"id": 32707,  "sloTypes": ["RESPONSE"]},
-        {"id": 32752,  "sloTypes": ["ERROR"]},
         {"id": 215853, "sloTypes": ["ERROR", "RESPONSE"]},
         {"id": 217602, "sloTypes": ["ERROR"]},
-        {"id": 32753,  "sloTypes": ["ERROR"]},
         {"id": 32722,  "sloTypes": ["ERROR"]},
     ]
     output_file = "alerts_action_count_output.json"

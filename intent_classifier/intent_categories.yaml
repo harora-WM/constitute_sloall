@@ -354,3 +354,18 @@ EVIDENCE:
       data_sources:
         - postgres
         - opensearch
+
+INFRA:
+  description: "Host-level infrastructure metrics - CPU, memory, disk (current or historical based on time range)"
+  intents:
+    INFRA_METRICS:
+      description: "Host-level infrastructure resource utilization (CPU, memory, disk) collected by SolarWinds/Zabbix; current snapshot or historical trend depending on query time range. Aggregated per host, not per service."
+      examples:
+        - "What's the current CPU utilization?"
+        - "Show memory usage in the last 24 hours"
+        - "Any hosts with high CPU right now?"
+        - "Disk usage trend this week"
+        - "Which hosts are memory-saturated?"
+        - "p95 CPU over the last 6 hours"
+      data_sources:
+        - clickhouse_infra

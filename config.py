@@ -76,6 +76,7 @@ CLICKHOUSE_URL = os.getenv(
 CLICKHOUSE_USERNAME = os.getenv("CLICKHOUSE_USERNAME", "wm_test")
 CLICKHOUSE_PASSWORD = os.getenv("CLICKHOUSE_PASSWORD", "Watermelon@123")
 CLICKHOUSE_DATABASE = os.getenv("CLICKHOUSE_DATABASE", "metrics")
+CLICKHOUSE_INFRA_TABLE = os.getenv("CLICKHOUSE_INFRA_TABLE", "infra_data")
 
 # ── OpenSearch ─────────────────────────────────────────────────────────────────
 OPENSEARCH_HOST = os.getenv(

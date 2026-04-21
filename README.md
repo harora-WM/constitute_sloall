@@ -85,8 +85,9 @@ Conversational Response + JSON Export
 ### Context Adapters
 - **`context_adapter/java_stats.py`** - Fetches SLO metrics from Watermelon API (intent-gated)
 - **`context_adapter/memory_adapter.py`** - Fetches behavior patterns from ClickHouse (intent-gated)
-- **`context_adapter/alret_count.py`** - Fetches alert action counts (always fetched)
+- **`context_adapter/alert_count.py`** - Fetches alert action counts (always fetched)
 - **`context_adapter/change_pre_post.py`** - Fetches latest deployment and pre/post deviations (always fetched)
+- **`context_adapter/infra_adapter.py`** - Fetches host-level CPU/memory/disk metrics from ClickHouse `infra_data` (intent-gated on `INFRA_METRICS`)
 
 ### Utilities
 - **`utils/time_range_resolver.py`** - Natural language time parsing
@@ -110,6 +111,7 @@ Query: "Show unhealthy services in the past 7 days"
 3. Data Fetching:
    - java_stats_api → Error budget, latency, health status
    - clickhouse → Behavior patterns and anomalies
+   - clickhouse_infra → Host-level CPU/memory/disk (only for INFRA_METRICS intent)
    - alerts_count → Alert action counts (always fetched)
    - change_impact → Latest deployment + pre/post deviations (always fetched)
 
@@ -134,6 +136,7 @@ Query: "Show unhealthy services in the past 7 days"
 |------------|---------|-----------|-------------|
 | `java_stats_api` | ✅ Implemented | Intent-gated | Real-time SLO metrics from Watermelon API |
 | `clickhouse` | ✅ Implemented | Intent-gated | Historical behavior patterns and AI memory |
+| `clickhouse_infra` | ✅ Implemented | Intent-gated (`INFRA_METRICS`) | Host-level CPU/memory/disk metrics (SolarWinds & Zabbix) |
 | `alerts_count` | ✅ Implemented | Always | Alert action counts for query time window |
 | `change_impact` | ✅ Implemented | Always | Latest deployment + pre/post EB/RESPONSE deviations |
 | `postgres` | ⏳ Planned | Intent-gated | SLO definitions, alerts, incidents |
@@ -161,6 +164,12 @@ cd context_adapter
 python memory_adapter.py
 ```
 
+**Test Infra Adapter:**
+```bash
+cd context_adapter
+python infra_adapter.py
+```
+
 **Test Time Resolution:**
 ```bash
 cd utils
@@ -170,7 +179,7 @@ python time_range_resolver.py
 ## Configuration Files
 
 - **`.env`** - Environment variables and credentials
-- **`intent_categories.yaml`** - 9 intent categories with 50+ specific intents
+- **`intent_categories.yaml`** - 10 intent categories (including `INFRA`) with 50+ specific intents
 - **`enrichment_rules.yaml`** - Auto-enrichment mappings
 - **`data_sources.yaml`** - Data source capabilities and settings
 

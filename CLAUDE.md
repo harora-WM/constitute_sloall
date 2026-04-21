@@ -35,8 +35,9 @@ cd intent_classifier && python intent_classifier.py
 cd intent_classifier && python timestamp.py "show errors in the last 15 minutes"
 cd context_adapter && python memory_adapter.py
 cd context_adapter && python java_stats.py
-cd context_adapter && python alret_count.py
+cd context_adapter && python alert_count.py
 cd context_adapter && python change_pre_post.py
+cd context_adapter && python infra_adapter.py
 ```
 
 **CLI commands inside the interactive loop:** `export`, `help`, `quit`/`exit`
@@ -64,10 +65,11 @@ User Query
   -> Step 2: Service Resolution (service_matcher.py)
       Fuzzy match service name -> service_id using services.yaml
   -> Step 3: Data Fetching (sequential)
-      java_stats_api  -- if 'java_stats_api' in data_sources (intent-routed)
-      clickhouse      -- if 'clickhouse' in data_sources (all patterns, no filtering)
-      alerts_count    -- ALWAYS fetched (regardless of intent)
-      change_impact   -- ALWAYS fetched (regardless of intent)
+      java_stats_api    -- if 'java_stats_api' in data_sources (intent-routed)
+      clickhouse        -- if 'clickhouse' in data_sources (all patterns, no filtering)
+      clickhouse_infra  -- if 'clickhouse_infra' in data_sources (host-level infra metrics)
+      alerts_count      -- ALWAYS fetched (regardless of intent)
+      change_impact     -- ALWAYS fetched (regardless of intent)
   -> Step 4: Conversational Response (LLM Call #2, llm_response_generator.py)
       Input: full orchestrator output
       Output: natural language answer
@@ -80,7 +82,7 @@ User Query
 
 **`main.py`** — Contains `SLOOrchestrator` class, `main()` interactive CLI, and the FastAPI `app` instance. `app_id` and `project_id` come from `config.APP_ID` / `config.PROJECT_ID` for CLI; for API they come from the request body (defaulting to the same config values if not supplied).
 
-**`intent_classifier/intent_classifier.py`** — Layer 1 LLM (AWS Bedrock). Outputs primary/secondary/enriched intents, entities (`service` only — no `time_range`/`comparison_range`), data_sources list, and UTC millisecond timestamps. Timestamp resolution calls `timestamp.py` with the raw user query string. Config files: `intent_categories.yaml` (9 categories, 50+ intents), `enrichment_rules.yaml`, `data_sources.yaml`.
+**`intent_classifier/intent_classifier.py`** — Layer 1 LLM (AWS Bedrock). Outputs primary/secondary/enriched intents, entities (`service` only — no `time_range`/`comparison_range`), data_sources list, and UTC millisecond timestamps. Timestamp resolution calls `timestamp.py` with the raw user query string. Config files: `intent_categories.yaml` (10 categories including `INFRA`, 50+ intents), `enrichment_rules.yaml`, `data_sources.yaml`.
 
 **`context_adapter/java_stats.py`** — Fetches real-time SLO metrics from Watermelon API via Keycloak auth. Routes by **primary intent first**, then falls back to secondary/enriched:
 - `CURRENT_HEALTH` -> `get_current_health()` -> 4 arrays (unhealthy_eb, at_risk_eb, unhealthy_response, at_risk_response)
@@ -89,9 +91,11 @@ User Query
 
 **`context_adapter/memory_adapter.py`** — Fetches historical behavior patterns from ClickHouse `ai_service_behavior_memory` table. When called by the orchestrator, `_fetch_memory_adapter` receives the full `intents` set and routes to `fetch_patterns_by_intent()`. If no intents are provided it falls back to `fetch_behavior_service_memory()` (backward-compat path). Currently 108 patterns for app 31854.
 
-**`context_adapter/alret_count.py`** — Fetches alert action counts from `wmerrorbudgetalertandnotificationservice` API via Keycloak auth. Always called by orchestrator for the full query time window, SLO types `["ERROR", "RESPONSE"]`. Entry point: `fetch_alerts_for_orchestrator()`.
+**`context_adapter/alert_count.py`** — Fetches alert action counts from `wmerrorbudgetalertandnotificationservice` API via Keycloak auth. Always called by orchestrator for the full query time window, SLO types `["ERROR", "RESPONSE"]`. Entry point: `fetch_alerts_for_orchestrator()`.
 
 **`context_adapter/change_pre_post.py`** — Fetches the latest deployment change (from `wmebonboarding` release-histories API) and top-5 EB/RESPONSE deviations pre/post that release (from `wmerrorbudgetstatisticsservice`). Always called by orchestrator. Entry point: `fetch_change_impact_for_orchestrator()`.
+
+**`context_adapter/infra_adapter.py`** — Fetches host-level infrastructure metrics (CPU / memory / disk) from ClickHouse table `metrics.infra_data` (collected by SolarWinds and Zabbix). Only triggered when `clickhouse_infra` appears in `data_sources` (i.e. when the classifier routes to the `INFRA_METRICS` intent). Filters by `app_id`, `project_id`, and the resolved `record_time` window. Granularity is **per host**, not per service — there is no service_id/service_name column. Entry point: `fetch_infra_for_orchestrator(app_id, project_id, start_time, end_time)`. Records are one row per `(host_name, metric_type, record_time)`; `metric_type` values are `{solarwinds,zabbix}_{cpu,memory,disk}`.
 
 **`llm_response_generator.py`** — Layer 2 LLM (AWS Bedrock). Receives complete orchestrator output and generates a conversational response as "SLO Advisor". System prompt defines interpretation of health status, burn rates, pattern types, and deviation data.
 
@@ -109,6 +113,7 @@ User Query
 |--------|-----------|-------------|
 | `java_stats_api` | If in `data_sources` from intent | Real-time SLO metrics; primary intent routes to correct function |
 | `clickhouse` | If in `data_sources` from intent | All historical behavior patterns; no time/intent filtering |
+| `clickhouse_infra` | If in `data_sources` from intent (`INFRA_METRICS`) | Host-level CPU/memory/disk metrics from `metrics.infra_data`; filtered by app/project/time |
 | `alerts_count` | Always | Alert action counts for query time window |
 | `change_impact` | Always | Latest deployment + top-5 EB/RESPONSE deviations pre/post release |
 | `postgres` | Not implemented | Planned for SLO definitions |
@@ -117,6 +122,7 @@ User Query
 ### ClickHouse Tables
 - `ai_service_behavior_memory` — behavior patterns (108 records, app 31854)
 - `ai_service_features_hourly` — service inventory (source for `services.yaml`)
+- `infra_data` — host-level infra metrics (CPU / memory / disk via SolarWinds and Zabbix); queried by `infra_adapter.py`. Table name overridable via `CLICKHOUSE_INFRA_TABLE`.
 
 ## Environment Variables (.env)
 
@@ -169,6 +175,7 @@ CLICKHOUSE_URL=http://ec2-47-129-241-41.ap-southeast-1.compute.amazonaws.com:812
 CLICKHOUSE_USERNAME=wm_test
 CLICKHOUSE_PASSWORD=your_password
 CLICKHOUSE_DATABASE=metrics
+CLICKHOUSE_INFRA_TABLE=infra_data
 
 # OpenSearch (adapter not yet integrated)
 OPENSEARCH_HOST=your_host
@@ -193,14 +200,24 @@ OPENSEARCH_PAGE_SIZE=5000
 
 **Import errors on startup:** Ensure `__init__.py` files exist in `intent_classifier/`, `context_adapter/`, and `utils/`.
 
-**`context_adapter/intent_based_queries.py`** is no longer used — `memory_adapter.py` now fetches all patterns directly without intent-based dispatch. The file still exists in the repo but is not imported anywhere.
+**`context_adapter/intent_based_queries.py`** is no longer used — `memory_adapter.py` now fetches all patterns directly without intent-based dispatch. The file still exists in the repo but is not imported anywhere and can be deleted safely.
 
 **`start_time`/`end_time` from API are only a fallback:** They are used only when the query contains no time reference (`timestamp source == "fallback"`). If the query mentions any time expression (regex or LLM matched), these fields are ignored regardless of their value. A minimum 1-hour gap is always enforced after resolution by shifting `start_time` backwards (`start = end - 1 hour`) — not forwards — so the query always covers a completed historical window rather than a future one.
 
 **`change_pre_post` ignores query time window:** It always fetches the single latest release from the API (sorted by date) and uses that release's `dateTimeMillis` as the anchor. The user's query start/end time is never passed to this adapter.
 
-**`alret_count` via orchestrator uses `project_id` filter only:** `fetch_alerts_for_orchestrator()` sends `[{"id": project_id, "sloTypes": ["ERROR", "RESPONSE"]}]`. The API requires `project_id` (215853) — using only `app_id` (31854) returns 0 results because all alerts are indexed by `sid: project_id`. The `app_id` is retained in the returned query metadata for traceability only. The `__main__` block uses more granular per-service filters for standalone testing only.
+**`alert_count` via orchestrator uses `project_id` filter only:** `fetch_alerts_for_orchestrator()` sends `[{"id": project_id, "sloTypes": ["ERROR", "RESPONSE"]}]`. The API requires `project_id` (215853) — using only `app_id` (31854) returns 0 results because all alerts are indexed by `sid: project_id`. The `app_id` is retained in the returned query metadata for traceability only. The `__main__` block uses more granular per-service filters for standalone testing only.
 
-**`TimestampResolver` class docstring says "requires ANTHROPIC_API_KEY":** This is wrong. The LLM fallback in `timestamp.py` uses `AWS_ACCESS_KEY_ID` via boto3/Bedrock, exactly like the intent classifier. The env var name in the docstring is stale.
+**`TimestampResolver` class docstring says "requires ANTHROPIC_API_KEY":** This is wrong (`timestamp.py:454`). The LLM fallback uses `AWS_ACCESS_KEY_ID` via boto3/Bedrock, exactly like the intent classifier. The env var name in the docstring is stale.
+
+**`timestamp.py` LLM fallback must return `{"ambiguous": true}` for time-less queries — not invent a default:** The system prompt in `_parse_with_llm` explicitly instructs the model to return `{"ambiguous": true}` when the query has no time reference, and the parser converts that to `None` so `source` falls through to `'fallback'`. This is load-bearing: if the LLM fabricates a default window (e.g. "last 1 hour") for a time-less query, `source` becomes `'llm'` and `main.py` ignores the API-provided `start_time`/`end_time`, silently overriding the caller. Do not loosen the prompt or remove the `ambiguous` branch in the parser.
+
+**`clickhouse_infra` is a distinct data source key from `clickhouse`:** `memory_adapter.py` and `infra_adapter.py` hit two different tables and are gated independently. The orchestrator fires `infra_adapter` only when the classifier emits `clickhouse_infra` in `data_sources` (currently only the `INFRA_METRICS` intent does). Don't reuse the `clickhouse` key for new ClickHouse adapters — add a new keyed source instead so adapters stay independently gated.
+
+**`infra_data` has no service column:** Only `host_name` is available. If a user asks for infra on a specific service, the adapter still returns all hosts for the app/project — there is no host→service mapping in the codebase. The Layer 2 system prompt is aware of this; don't add fake service filtering in the adapter.
 
 **Adding a new adapter:** At the top of the new file, use the `sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))` pattern before `import config` (see existing adapters). Add any new URLs/credentials to `.env` and `config.py`, then wire the entry-point function into `SLOOrchestrator.process_query()` in `main.py`. Note: only `context_adapter/` files follow this `config.py` pattern — do not apply it to `intent_classifier/`.
+
+**`ARCHITECTURE.md` is partially outdated:** It references 76 behavior patterns and mentions "128 total services", but the current counts are 108 patterns and 125 services. It also says "No tests" but `test_new_adapters.py` exists. Treat `CLAUDE.md` as the authoritative reference; `ARCHITECTURE.md` documents an earlier state of the system.
+
+**`README.md` has stale references:** It shows `source venv/bin/activate` (should be `.venv`) and includes a test command `python utils/time_range_resolver.py` pointing to a file that no longer exists. The equivalent standalone test is `cd intent_classifier && python timestamp.py "your query"`, which is already listed in the Development Commands above.

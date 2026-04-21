@@ -75,7 +75,10 @@ A fully conversational SLO analysis system that uses AWS Bedrock Claude Sonnet 4
 │    "time_resolution": {...},                                                 │
 │    "data": {                                                                 │
 │      "java_stats_api": {...},                                                │
-│      "clickhouse": {...}                                                     │
+│      "clickhouse": {...},                                                    │
+│      "clickhouse_infra": {...},   // only for INFRA_METRICS intent          │
+│      "alerts_count": {...},                                                  │
+│      "change_impact": {...}                                                  │
 │    },                                                                        │
 │    "metadata": {...}                                                         │
 │  }                                                                           │
@@ -180,7 +183,20 @@ A fully conversational SLO analysis system that uses AWS Bedrock Claude Sonnet 4
 
 **Why:** Give LLM complete historical context to make better analysis
 
-### 6. LLM Response Generator (`llm_response_generator.py`)
+### 6. Infra Adapter (`context_adapter/infra_adapter.py`)
+**Role:** Fetch host-level infrastructure metrics
+- **Source:** ClickHouse `metrics.infra_data` table (collected by SolarWinds and Zabbix)
+- **Triggered by:** `clickhouse_infra` data source — emitted when classifier routes to the `INFRA_METRICS` intent
+- **Filters:** `app_id`, `project_id`, and the resolved `record_time` window
+- **Granularity:** one row per `(host_name, metric_type, record_time)`
+  - `metric_type` ∈ `{solarwinds,zabbix}_{cpu,memory,disk}`
+  - `tool_name` ∈ `{SOLARWINDS, ZABBIX}` — the same host may be reported by both
+- **Resource coverage:** CPU, memory, disk only — no network
+- **Per-host, NOT per-service:** there is no service_id/service column in this table
+
+**Entry point:** `fetch_infra_for_orchestrator(app_id, project_id, start_time, end_time)`
+
+### 7. LLM Response Generator (`llm_response_generator.py`)
 **Role:** Generate conversational responses
 - **LLM:** AWS Bedrock Claude Sonnet 4.6 (SECOND call)
 - **Input:** Complete orchestrator output
@@ -188,7 +204,7 @@ A fully conversational SLO analysis system that uses AWS Bedrock Claude Sonnet 4
 
 **System Prompt Includes:**
 - Expert SLO analyst role definition
-- Data source explanations (Java Stats, ClickHouse)
+- Data source explanations (Java Stats, ClickHouse memory, ClickHouse infra, Alerts, Change Impact)
 - Metric interpretation guidelines
   - Health status meanings (UNHEALTHY, AT_RISK, HEALTHY)
   - Burn rate severity levels
@@ -265,6 +281,9 @@ constitute_slo/
 ├── context_adapter/
 │   ├── java_stats.py                   # MODIFIED: Primary intent first
 │   ├── memory_adapter.py               # MODIFIED: No filtering
+│   ├── alert_count.py                  # Always-on alert count adapter
+│   ├── change_pre_post.py              # Always-on deployment + pre/post deviations
+│   ├── infra_adapter.py                # Host-level CPU/memory/disk (INFRA_METRICS)
 │   └── intent_based_queries.py         # Unused now
 ├── utils/
 │   ├── service_matcher.py              # Service name → ID
@@ -319,11 +338,20 @@ get_current_health(app_id=31854, ...)
 # - at_risk_services_response (if any)
 ```
 
-**ClickHouse:**
+**ClickHouse (behavior memory):**
 ```sql
 SELECT * FROM ai_service_behavior_memory
 WHERE application_id = 31854
 # Returns all 76 patterns
+```
+
+**ClickHouse (infra metrics) — only if `INFRA_METRICS` intent fires:**
+```sql
+SELECT * FROM metrics.infra_data
+WHERE app_id = 31854 AND project_id = 215853
+  AND record_time BETWEEN fromUnixTimestamp64Milli(start)
+                      AND fromUnixTimestamp64Milli(end)
+# Returns host-level CPU / memory / disk rows for the resolved window
 ```
 
 **Step 4 - Response Generation:**

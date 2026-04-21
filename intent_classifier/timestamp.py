@@ -389,10 +389,11 @@ def _parse_with_llm(query: str) -> Optional[tuple[datetime, datetime]]:
         "You are a time-range extraction assistant for a service monitoring system.\n"
         "Given a natural language query, extract start_time and end_time.\n\n"
         "Rules:\n"
-        "- Return ONLY a valid JSON object with exactly two keys: start_time, end_time.\n"
+        "- Return ONLY a valid JSON object.\n"
+        "- If the query contains an explicit or implicit time reference (e.g. \"last 2 hours\", \"yesterday\", \"this morning\", \"between 3pm and 5pm\"), return exactly two keys: start_time, end_time.\n"
+        "- If the query has NO time reference at all (completely ambiguous about time), return exactly {\"ambiguous\": true}. Do NOT invent a default window.\n"
         "- Timestamps must be ISO 8601 UTC format: YYYY-MM-DDTHH:MM:SS\n"
         "- Period definitions: morning 06–12, afternoon 12–17, evening 17–21, night 21–24.\n"
-        "- If completely ambiguous → use last 1 hour.\n"
         "- Output ONLY the JSON — no explanation, no markdown fences."
     )
     user_msg = (
@@ -423,6 +424,9 @@ def _parse_with_llm(query: str) -> Optional[tuple[datetime, datetime]]:
         json_match = re.search(r"\{.*\}", raw, re.DOTALL)
         if json_match:
             data = json.loads(json_match.group())
+            if data.get("ambiguous") is True:
+                logger.info("LLM reported query as time-ambiguous; deferring to fallback")
+                return None
             if "start_time" in data and "end_time" in data:
                 fmt   = "%Y-%m-%dT%H:%M:%S"
                 start = datetime.strptime(data["start_time"], fmt).replace(tzinfo=timezone.utc).astimezone()
@@ -445,7 +449,7 @@ class TimestampResolver:
 
     Pipeline per query:
       1. Deterministic regex / rule-based parsing
-      2. Claude Sonnet LLM fallback  (requires ANTHROPIC_API_KEY)
+      2. Claude Sonnet LLM fallback  (requires AWS_ACCESS_KEY_ID via boto3/Bedrock)
       3. Hard fallback: last 1 hour
     """
 

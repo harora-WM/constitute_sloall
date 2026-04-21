@@ -85,9 +85,12 @@ for msg in st.session_state.messages:
 
                 # Per-source stats
                 for source, data in _t.get("data", {}).items():
-                    if isinstance(data, dict) and "stats" in data:
-                        st.markdown(f"**{source} stats:**")
-                        st.json(data["stats"])
+                    if isinstance(data, dict):
+                        if "stats" in data:
+                            st.markdown(f"**{source} stats:**")
+                            st.json(data["stats"])
+                        elif "total_records" in data:
+                            st.markdown(f"**{source}:** `{data['total_records']}` records")
 
 # ── Input ─────────────────────────────────────────────────────────────────────
 
@@ -147,9 +150,12 @@ if query:
                             st.markdown("**Data sources used:** " + ", ".join(f"`{s}`" for s in sources))
 
                         for source, sdata in technical["data"].items():
-                            if isinstance(sdata, dict) and "stats" in sdata:
-                                st.markdown(f"**{source} stats:**")
-                                st.json(sdata["stats"])
+                            if isinstance(sdata, dict):
+                                if "stats" in sdata:
+                                    st.markdown(f"**{source} stats:**")
+                                    st.json(sdata["stats"])
+                                elif "total_records" in sdata:
+                                    st.markdown(f"**{source}:** `{sdata['total_records']}` records")
 
                     st.session_state.messages.append({
                         "role": "assistant",

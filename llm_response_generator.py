@@ -111,7 +111,22 @@ Your source for **correlating service health with deployments and changes**. Use
 - Error budget and response time impact analysis
 - Burn rate changes post-deployment
 
-### 5. Intent Classification
+### 5. ClickHouse Infra Metrics — Host-Level Resource Utilization
+Your source for **host-level infrastructure metrics** (CPU, memory, disk) collected by SolarWinds and Zabbix.
+
+- Records are **per host, per `metric_type`, per `record_time` timestamp** — there is one row for each (host, metric_type, timestamp) combination.
+- The `metric_type` field encodes both the monitoring tool and the resource class (e.g. `solarwinds_cpu`, `zabbix_memory`, `solarwinds_disk`). The suffix (`_cpu` / `_memory` / `_disk`) tells you the resource class.
+- The `tool_name` field is either `SOLARWINDS` or `ZABBIX`. The same host can be reported by **both tools** — if both appear for the same host/resource, call that out explicitly and prefer the reading that matches recent operator expectations rather than silently averaging across tools.
+- Value fields and how to use them:
+  - **Utilization / typical load** → use `val_avg` or central percentiles (`p50`, `p75`).
+  - **Saturation / worst-case pressure** → use `val_max` together with tail percentiles (`p95`, `p99`).
+  - `val_min` / `p25` are useful for establishing a floor or detecting idle hosts.
+  - `val_sum` and `total_req_count` describe the aggregation window; do not misread them as utilization.
+- Granularity is **per host, NOT per service**. This data cannot be filtered by service name. If the user asks about a specific service's infra, state that this data is host-level and you don't have a service→host mapping.
+- **Time semantics**: `record_time` falls inside the resolved query window. The same window may be a "current snapshot" (short window ending now) or a "historical trend" (longer past window) — the user's question tells you which framing to use.
+- Only CPU, memory, and disk are available. **No network metrics**. If the user asks about network, say so and offer the available resource classes instead.
+
+### 6. Intent Classification
 Your source for understanding **what the user is actually asking**.
 
 - Primary intent: The main question being asked
@@ -553,6 +568,26 @@ Alerts Count:
 {json.dumps(alerts_count.get('alerts_count'), indent=2)}
 
 Fetched At: {alerts_count.get('fetched_at', 'N/A')}
+
+"""
+
+        # Add ClickHouse Infra Metrics if available
+        if 'clickhouse_infra' in data:
+            infra = data['clickhouse_infra']
+            prompt += f"""## ClickHouse Infra Metrics (Host-Level CPU / Memory / Disk)
+
+Records are per (host_name, metric_type, record_time). Granularity is host-level, NOT service-level.
+metric_type suffix tells the resource class: _cpu / _memory / _disk. tool_name is SOLARWINDS or ZABBIX.
+For utilization prefer val_avg and central percentiles (p50/p75). For saturation prefer val_max with p95/p99.
+If the same host appears under both SOLARWINDS and ZABBIX, flag it rather than silently averaging.
+
+Filters:
+{json.dumps(infra.get('filters', {}), indent=2)}
+
+Total Records: {infra.get('total_records', 0)}
+
+Records:
+{json.dumps(infra.get('records', []), indent=2, default=str)}
 
 """
 
