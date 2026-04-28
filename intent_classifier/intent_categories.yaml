@@ -188,24 +188,37 @@ IMPACT:
         - clickhouse
 
     USER_JOURNEY_IMPACT:
-      description: "User flow/journey disruption"
+      description: "User flow/journey disruption — end-to-end health of multi-step business flows"
       examples:
         - "Impact on checkout flow?"
         - "User journey affected"
         - "Customer experience impact"
+        - "How are user journeys performing?"
+        - "Show user journey health"
+        - "Which user flows are broken?"
+        - "What's the success rate of our critical user journeys?"
+        - "Are any end-to-end flows failing?"
+        - "Show journey performance for the last 24 hours"
       data_sources:
         - java_stats_api
         - clickhouse
+        - journey_health_api
 
     GOLDEN_PATH_IMPACT:
-      description: "Critical business flow impact"
+      description: "Critical business flow impact — top EB-consuming transactions and revenue-critical paths"
       examples:
         - "Business impact of SLO breach?"
         - "Revenue impact analysis"
         - "Critical path disruption"
+        - "Which transactions are consuming the most error budget?"
+        - "Show me the top quadrant EB transactions"
+        - "What are the most critical failing endpoints?"
+        - "Which transactions are in the danger quadrant?"
+        - "Show top-5 worst error budget transactions"
       data_sources:
         - java_stats_api
         - clickhouse
+        - golden_path_api
 
     CUSTOMER_IMPACT:
       description: "Customer-specific impact analysis"

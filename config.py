@@ -50,6 +50,18 @@ RELEASE_IMPACT_API_URL = os.getenv(
     "RELEASE_IMPACT_API_URL",
     "https://wm-sandbox-1.watermelon.us/services/wmerrorbudgetstatisticsservice/api/release-impact/transactions/top-5/POST"
 )
+GOLDEN_PATH_EB_API_URL = os.getenv(
+    "GOLDEN_PATH_EB_API_URL",
+    "https://wm-sandbox-1.watermelon.us/services/wmerrorbudgetstatisticsservice/api/transactions/top-5/quadrant/EB"
+)
+GOLDEN_PATH_RESPONSE_API_URL = os.getenv(
+    "GOLDEN_PATH_RESPONSE_API_URL",
+    "https://wm-sandbox-1.watermelon.us/services/wmerrorbudgetstatisticsservice/api/transactions/top-5/quadrant/RESPONSE"
+)
+JOURNEY_HEALTH_API_URL = os.getenv(
+    "JOURNEY_HEALTH_API_URL",
+    "https://wm-sandbox-1.watermelon.us/services/wmerrorbudgetstatisticsservice/api/user-journeys/performance"
+)
 
 # ── Credentials ────────────────────────────────────────────────────────────────
 USERNAME = os.getenv("USERNAME", "wmadmin")

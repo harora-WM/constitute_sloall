@@ -9,6 +9,51 @@ from datetime import datetime
 
 API_URL = "http://localhost:8000"
 
+# Maps internal data-source keys to user-facing display names
+SOURCE_DISPLAY_NAMES = {
+    "java_stats_api":    "Real-Time Service Metrics",
+    "clickhouse":        "Historical Behavior Patterns",
+    "clickhouse_infra":  "Infrastructure Metrics",
+    "golden_path_api":   "Transaction Quadrant Analysis",
+    "journey_health_api": "User Journey Performance",
+    "alerts_count":      "Alert & Incident History",
+    "change_impact":     "Deployment & Change Impact",
+    "postgres":          "SLO Definitions",
+    "opensearch":        "Logs & Traces",
+}
+
+def source_label(key: str) -> str:
+    return SOURCE_DISPLAY_NAMES.get(key, key.replace("_", " ").title())
+
+def render_source_stat(source: str, data: dict) -> None:
+    label = source_label(source)
+    if "stats" in data:
+        st.markdown(f"**{label} stats:**")
+        st.json(data["stats"])
+    elif "total_records" in data:
+        st.markdown(f"**{label}:** `{data['total_records']}` records")
+    elif "summary_EB" in data:
+        s_eb   = data["summary_EB"]
+        s_resp = data["summary_response"]
+        threshold = data.get("filters", {}).get("min_absolute_error_rate", "—")
+        st.markdown(
+            f"**{label}:** "
+            f"EB `{s_eb['total_transactions']}` transactions "
+            f"(hvhe={s_eb['hvhe_transactions']}, hvle={s_eb['hvle_transactions']}, "
+            f"lvhe={s_eb['lvhe_transactions']}, lvle={s_eb['lvle_transactions']}) · "
+            f"RESPONSE `{s_resp['total_transactions']}` transactions · "
+            f"filter: absoluteErrorRate > {threshold}"
+        )
+    elif "records" in data and isinstance(data["records"], list) and data["records"]:
+        record = data["records"][0]
+        journey_count = len(record.get("summaries", []))
+        unhealthy = record.get("unHealthyCount", "—")
+        healthy_rate = record.get("healthyRate", "—")
+        st.markdown(
+            f"**{label}:** `{journey_count}` journeys · "
+            f"unhealthy={unhealthy} · healthyRate={healthy_rate}"
+        )
+
 st.set_page_config(
     page_title="SLO Advisor",
     page_icon="📊",
@@ -81,16 +126,12 @@ for msg in st.session_state.messages:
 
                 sources = _t.get("data_sources_used", [])
                 if sources:
-                    st.markdown("**Data sources used:** " + ", ".join(f"`{s}`" for s in sources))
+                    st.markdown("**Data sources used:** " + ", ".join(f"`{source_label(s)}`" for s in sources))
 
                 # Per-source stats
                 for source, data in _t.get("data", {}).items():
                     if isinstance(data, dict):
-                        if "stats" in data:
-                            st.markdown(f"**{source} stats:**")
-                            st.json(data["stats"])
-                        elif "total_records" in data:
-                            st.markdown(f"**{source}:** `{data['total_records']}` records")
+                        render_source_stat(source, data)
 
 # ── Input ─────────────────────────────────────────────────────────────────────
 
@@ -147,15 +188,11 @@ if query:
 
                         sources = technical["data_sources_used"]
                         if sources:
-                            st.markdown("**Data sources used:** " + ", ".join(f"`{s}`" for s in sources))
+                            st.markdown("**Data sources used:** " + ", ".join(f"`{source_label(s)}`" for s in sources))
 
                         for source, sdata in technical["data"].items():
                             if isinstance(sdata, dict):
-                                if "stats" in sdata:
-                                    st.markdown(f"**{source} stats:**")
-                                    st.json(sdata["stats"])
-                                elif "total_records" in sdata:
-                                    st.markdown(f"**{source}:** `{sdata['total_records']}` records")
+                                render_source_stat(source, sdata)
 
                     st.session_state.messages.append({
                         "role": "assistant",

@@ -215,8 +215,8 @@ if __name__ == "__main__":
     # Configuration parameters
     username = config.USERNAME
     password = config.PASSWORD
-    start_date = "1773426600000"
-    end_date = "1776191400000"
+    start_date = "1775500200000"
+    end_date = "1776882600000"
     application_slo_filters = [
         {"id": 32707,  "sloTypes": ["RESPONSE"]},
         {"id": 215853, "sloTypes": ["ERROR", "RESPONSE"]},

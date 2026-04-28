@@ -36,6 +36,8 @@ from context_adapter.memory_adapter import fetch_behavior_service_memory, transf
 from context_adapter.alert_count import fetch_alerts_for_orchestrator
 from context_adapter.change_pre_post import fetch_change_impact_for_orchestrator
 from context_adapter.infra_adapter import fetch_infra_for_orchestrator
+from context_adapter.golden_path_adapter import fetch_golden_path_for_orchestrator
+from context_adapter.journey_health_adapter import fetch_journey_health_for_orchestrator
 from utils.service_matcher import ServiceMatcher
 from llm_response_generator import LLMResponseGenerator
 
@@ -235,6 +237,39 @@ class SLOOrchestrator:
                 print("   ✅ Infra metrics retrieved\n")
             else:
                 print("   ⚠️  Infra adapter returned no data\n")
+
+        # Fetch from Golden Path API (top-5 quadrant EB transactions)
+        if 'golden_path_api' in data_sources:
+            print("   → Fetching from Golden Path API (quadrant EB + RESPONSE transactions)...")
+            golden_path_data = self._fetch_golden_path(
+                app_id=effective_app_id,
+                project_id=effective_project_id,
+                start_time=start_time,
+                end_time=end_time,
+            )
+            if golden_path_data:
+                adapter_data['golden_path_api'] = golden_path_data
+                eb_total = golden_path_data.get('summary_EB', {}).get('total_transactions', 0)
+                resp_total = golden_path_data.get('summary_response', {}).get('total_transactions', 0)
+                print(f"   ✅ Golden Path data retrieved (EB={eb_total}, RESPONSE={resp_total} transactions)\n")
+            else:
+                print("   ⚠️  Golden Path API returned no data\n")
+
+        # Fetch from Journey Health API (user journey performance)
+        if 'journey_health_api' in data_sources:
+            print("   → Fetching from Journey Health API (user journey performance)...")
+            journey_health_data = self._fetch_journey_health(
+                app_id=effective_app_id,
+                project_id=effective_project_id,
+                start_time=start_time,
+                end_time=end_time,
+            )
+            if journey_health_data:
+                adapter_data['journey_health_api'] = journey_health_data
+                total = len(journey_health_data.get('records', [{}])[0].get('summaries', []))
+                print(f"   ✅ Journey Health data retrieved ({total} journey summaries)\n")
+            else:
+                print("   ⚠️  Journey Health API returned no data\n")
 
         # Fetch from Alerts Count API (always fetch regardless of intent)
         print("   → Fetching from Alerts Count API...")
@@ -545,6 +580,50 @@ class SLOOrchestrator:
             )
         except Exception as e:
             print(f"   ✗ Error fetching infra metrics: {e}")
+            return None
+
+    def _fetch_golden_path(
+        self,
+        app_id: int,
+        project_id: int,
+        start_time: int,
+        end_time: int,
+    ) -> Optional[Dict[str, Any]]:
+        """Fetch top-5 quadrant EB transactions from the Golden Path API."""
+        try:
+            return fetch_golden_path_for_orchestrator(
+                app_id=app_id,
+                project_id=project_id,
+                start_time=start_time,
+                end_time=end_time,
+                username=self.java_stats_username,
+                password=self.java_stats_password,
+            )
+        except Exception as e:
+            print(f"   ✗ Error fetching Golden Path data: {e}")
+            return None
+
+    def _fetch_journey_health(
+        self,
+        app_id: int,
+        project_id: int,
+        start_time: int,
+        end_time: int,
+        range_type: str = "CUSTOM",
+    ) -> Optional[Dict[str, Any]]:
+        """Fetch user journey performance records from the Journey Health API."""
+        try:
+            return fetch_journey_health_for_orchestrator(
+                app_id=app_id,
+                project_id=project_id,
+                start_time=start_time,
+                end_time=end_time,
+                range_type=range_type,
+                username=self.java_stats_username,
+                password=self.java_stats_password,
+            )
+        except Exception as e:
+            print(f"   ✗ Error fetching Journey Health data: {e}")
             return None
 
     def _fetch_alerts_count(
