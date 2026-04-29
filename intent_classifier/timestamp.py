@@ -7,7 +7,7 @@ Converts natural language time expressions to exact UTC millisecond timestamps.
 Hybrid architecture:
   1. Deterministic regex / rule-based parsing  (fast, high confidence)
   2. Claude Sonnet LLM fallback               (handles complex / ambiguous queries)
-  3. Hard fallback                             (last 1 hour)
+  3. Hard fallback                             (last 2 hours)
 
 Index granularity rule:
   - duration <= 3 days  →  HOURLY
@@ -450,7 +450,7 @@ class TimestampResolver:
     Pipeline per query:
       1. Deterministic regex / rule-based parsing
       2. Claude Sonnet LLM fallback  (requires AWS_ACCESS_KEY_ID via boto3/Bedrock)
-      3. Hard fallback: last 1 hour
+      3. Hard fallback: last 2 hours
     """
 
     def resolve_time_range(self, query: str) -> Dict[str, Any]:
@@ -487,8 +487,8 @@ class TimestampResolver:
         if result:
             start, end = result
         else:
-            logger.info("Timestamp: LLM fallback unavailable, using default (last 1 hour)")
-            start, end = now - timedelta(hours=1), now
+            logger.info("Timestamp: LLM fallback unavailable, using default (last 2 hours)")
+            start, end = now - timedelta(hours=2), now
 
         duration_days = _duration_days(start, end)
         index = "HOURLY" if duration_days <= 3 else "DAILY"

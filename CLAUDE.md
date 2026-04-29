@@ -30,7 +30,7 @@ python fetch_services.py
 
 # Integration test: SLOOrchestrator end-to-end + infra_adapter standalone (requires live credentials)
 # golden_path_adapter and journey_health_adapter are not yet in this file; test them via their __main__ blocks
-python test_new_adapters.py
+python tests/test_new_adapters.py
 
 # Test components individually
 python utils/service_matcher.py "dashboard-stats"
@@ -130,7 +130,7 @@ Currently sanitized by `_sanitize_response()`: `Java Stats API`, `Java Stats`, `
 
 **`utils/token_tracker.py`** — Writes one row per LLM task to `metrics.llm_token_usage` in ClickHouse. `TokenTracker(app_id, project_id, username)` generates a `batch_id` (UUID) shared across all tasks in that pipeline run; `run_id` is a sequential counter (1, 2, …) auto-incremented per `log_task()` call. Fields logged: `task_id` (unique UUID), `task_name`, `project_name` (always `"Conversational_SLO"`), `model_name`, `model_provider` (always `"bedrock"`), `input_tokens`, `output_tokens`, `total_tokens`, `duration_ms`, `task_status`, `response_status`, `had_error`, `error_type`, `token_usage_missing`. All errors are swallowed with a print so a logging failure never breaks the pipeline. The `event_date` column is MATERIALIZED in ClickHouse (`toDate(started_at)`) — never insert it.
 
-**`intent_classifier/timestamp.py`** — Converts the raw user query directly to UTC millisecond timestamps using a **hybrid three-stage approach**: (1) deterministic regex/rule-based parsing, (2) Claude Sonnet LLM fallback for complex/ambiguous expressions, (3) hard fallback to last 1 hour. Determines index granularity: HOURLY (<=3 days), DAILY (>3 days). Called with the raw query string, not an LLM-extracted label.
+**`intent_classifier/timestamp.py`** — Converts the raw user query directly to UTC millisecond timestamps using a **hybrid three-stage approach**: (1) deterministic regex/rule-based parsing, (2) Claude Sonnet LLM fallback for complex/ambiguous expressions, (3) hard fallback to last 2 hours. Determines index granularity: HOURLY (<=3 days), DAILY (>3 days). Called with the raw query string, not an LLM-extracted label.
 
 **`token_usage.py`** — Standalone Streamlit dashboard for LLM token consumption. Reads directly from `metrics.llm_token_usage` via ClickHouse HTTP API — does NOT require the FastAPI backend. Three tabs: **Overview** (4 metric cards + tokens/requests over time + token distribution by project), **Utilization Report** (HTML table of recent runs: task name + task_id, project, user, timestamps, tokens, status), **Request Log** (accordion table using native `<details>/<summary>` HTML — one expandable row per task showing Time/Status/Run ID/Task/Model/Tokens/Duration in the header; Request Details panel inside with all fields). All tabs share a time-range filter (Last 7 days / Last 30 days / Custom) rendered outside the tabs. Uses `_where(start, end)` helper that filters on both `event_date` (partition pruning) and `started_at` (exact range).
 
@@ -233,7 +233,6 @@ OPENSEARCH_PAGE_SIZE=5000
 
 **Import errors on startup:** Ensure `__init__.py` files exist in `intent_classifier/`, `context_adapter/`, and `utils/`.
 
-**`context_adapter/intent_based_queries.py`** is no longer used — `memory_adapter.py` now fetches all patterns directly without intent-based dispatch. It is not imported anywhere; delete it to avoid confusion.
 
 **`start_time`/`end_time` from API are only a fallback:** They are used only when the query contains no time reference (`timestamp source == "fallback"`). If the query mentions any time expression (regex or LLM matched), these fields are ignored regardless of their value. A minimum 1-hour gap is always enforced after resolution by shifting `start_time` backwards (`start = end - 1 hour`) — not forwards — so the query always covers a completed historical window rather than a future one.
 
@@ -266,6 +265,6 @@ The envelope format varies by adapter — there is no single canonical schema. A
 
 The Layer 2 system prompt documents how to interpret each of these structures.
 
-**`ARCHITECTURE.md` is partially outdated:** It references 76 behavior patterns and mentions "128 total services", but the current counts are 108 patterns and 125 services. It also says "No tests" but `test_new_adapters.py` exists. Treat `CLAUDE.md` as the authoritative reference; `ARCHITECTURE.md` documents an earlier state of the system.
+**`ARCHITECTURE.md` is partially outdated:** It references 76 behavior patterns and mentions "128 total services", but the current counts are 108 patterns and 125 services. It also says "No tests" but `tests/test_new_adapters.py` exists. Treat `CLAUDE.md` as the authoritative reference; `ARCHITECTURE.md` documents an earlier state of the system.
 
 **`README.md` has stale references:** It shows `source venv/bin/activate` (should be `.venv`) and includes a test command `python utils/time_range_resolver.py` pointing to a file that no longer exists. The equivalent standalone test is `cd intent_classifier && python timestamp.py "your query"`, which is already listed in the Development Commands above.

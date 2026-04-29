@@ -271,10 +271,9 @@ constitute_slo/
 ├── context_adapter/
 │   ├── java_stats.py                   # MODIFIED: Primary intent first
 │   ├── memory_adapter.py               # MODIFIED: No filtering
-│   ├── alert_count.py                  # Always-on alert count adapter
-│   ├── change_pre_post.py              # Always-on deployment + pre/post deviations
-│   ├── infra_adapter.py                # Host-level CPU/memory/disk (INFRA_METRICS)
-│   └── intent_based_queries.py         # Unused now
+│   ├── alert_count.py                  # Alert count adapter (intent-gated)
+│   ├── change_pre_post.py              # Deployment + pre/post deviations (intent-gated)
+│   └── infra_adapter.py                # Host-level CPU/memory/disk (INFRA_METRICS)
 ├── utils/
 │   ├── service_matcher.py              # Service name → ID
 │   └── time_range_resolver.py          # Time parsing
@@ -310,7 +309,7 @@ quit      # Exit
 - Primary: `CURRENT_HEALTH`
 - Secondary: `SLO_STATUS` (from LLM)
 - Enriched: `ALERT_STATUS`, `INCIDENT_STATUS` (from rules)
-- Time: `current` → last 1 hour
+- Time: `current` → last 2 hours
 - Data sources: `java_stats_api`, `clickhouse`
 
 **Step 2 - Service Resolution:**
