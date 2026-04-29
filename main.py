@@ -159,19 +159,19 @@ class SLOOrchestrator:
             start_time = primary_range.get('start_time')
             end_time   = primary_range.get('end_time')
         else:
-            # No time in query — use API-provided values if given, else keep the 1-hour fallback
+            # No time in query — use API-provided values if given, else keep the 2-hour fallback
             if not start_time:
                 start_time = primary_range.get('start_time')
             if not end_time:
                 end_time = primary_range.get('end_time')
 
-        # Enforce minimum 1-hour gap
+        # Enforce minimum 2-hour gap
         # If gap is too small, shift start backwards (not end forwards) so we
         # always query a completed historical window rather than a future one.
-        ONE_HOUR_MS = 60 * 60 * 1000
+        TWO_HOURS_MS = 2 * 60 * 60 * 1000
         if start_time is not None and end_time is not None:
-            if (end_time - start_time) < ONE_HOUR_MS:
-                start_time = end_time - ONE_HOUR_MS
+            if (end_time - start_time) < TWO_HOURS_MS:
+                start_time = end_time - TWO_HOURS_MS
 
         if start_time is not None and end_time is not None:
             # Always auto-calculate index from the final start/end
@@ -224,6 +224,7 @@ class SLOOrchestrator:
                 start_time=start_time,
                 end_time=end_time,
                 app_id=effective_app_id,
+                project_id=effective_project_id,
                 service_name=service,
                 intents=all_intents,
                 incident_timestamp=None  # Could extract from entities if needed
@@ -411,6 +412,7 @@ class SLOOrchestrator:
         start_time: int,
         end_time: int,
         app_id: int,
+        project_id: int,
         service_name: Optional[str] = None,
         intents: Optional[set] = None,
         incident_timestamp: Optional[int] = None
@@ -421,6 +423,8 @@ class SLOOrchestrator:
         Args:
             start_time: Start time in milliseconds
             end_time: End time in milliseconds
+            app_id: Application ID
+            project_id: Project ID
             service_name: Optional service name filter (from intent classifier)
             intents: Set of all intents (primary + secondary + enriched)
             incident_timestamp: Optional incident timestamp for RECURRING_INCIDENT
@@ -449,6 +453,7 @@ class SLOOrchestrator:
                     start_time=start_time,
                     end_time=end_time,
                     app_id=app_id,
+                    project_id=project_id,
                     service_id=service_id,
                     service_name=service_name,
                     incident_timestamp=incident_timestamp
@@ -460,6 +465,7 @@ class SLOOrchestrator:
                     start_time=start_time,
                     end_time=end_time,
                     app_id=app_id,
+                    project_id=project_id,
                     sid=service_name
                 )
 
@@ -471,6 +477,7 @@ class SLOOrchestrator:
                     start_time=start_time,
                     end_time=end_time,
                     app_id=app_id,
+                    project_id=project_id,
                     sid=service_name
                 )
                 return transformed

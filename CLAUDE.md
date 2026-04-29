@@ -106,7 +106,7 @@ So a query classified as `ROOT_CAUSE_SINGLE` will silently add both `clickhouse_
 
 **`context_adapter/java_stats.py`** — Fetches real-time SLO metrics from Watermelon API via Keycloak auth. Always calls `fetch_api_data()` → `transform_to_llm_format()`, returning 4 arrays (unhealthy_eb, at_risk_eb, unhealthy_response, at_risk_response) for all services regardless of intent. Service filtering and EB-only views are left to the Layer 2 LLM.
 
-**`context_adapter/memory_adapter.py`** — Fetches historical behavior patterns from ClickHouse `ai_service_behavior_memory` table. When called by the orchestrator, `_fetch_memory_adapter` receives the full `intents` set and routes to `fetch_patterns_by_intent()`. If no intents are provided it falls back to `fetch_behavior_service_memory()` (backward-compat path). Currently 108 patterns for app 31854.
+**`context_adapter/memory_adapter.py`** — Fetches historical behavior patterns from ClickHouse `ai_service_behavior_memory` table. When called by the orchestrator, `_fetch_memory_adapter` receives the full `intents` set and routes to `fetch_patterns_by_intent()`. If no intents are provided it falls back to `fetch_behavior_service_memory()` (backward-compat path). Filters by both `app_id` and `project_id` (required). Currently 108 patterns for app 31854 / project 215853.
 
 **`context_adapter/alert_count.py`** — Fetches alert action counts from `wmerrorbudgetalertandnotificationservice` API via Keycloak auth. Called by orchestrator when `alerts_count` appears in `data_sources`, for the full query time window, SLO types `["ERROR", "RESPONSE"]`. Entry point: `fetch_alerts_for_orchestrator()`.
 
@@ -151,7 +151,7 @@ Currently sanitized by `_sanitize_response()`: `Java Stats API`, `Java Stats`, `
 | `opensearch` | Not implemented | Planned for logs/traces; returns `{"status": "not_implemented"}` if classifier routes to it |
 
 ### ClickHouse Tables
-- `ai_service_behavior_memory` — behavior patterns (108 records, app 31854)
+- `ai_service_behavior_memory` — behavior patterns (108 records, app 31854 / project 215853); filtered by both `application_id` and `project_id`
 - `ai_service_features_hourly` — service inventory (source for `services.yaml`)
 - `infra_data` — host-level infra metrics (CPU / memory / disk via SolarWinds and Zabbix); queried by `infra_adapter.py`. Table name overridable via `CLICKHOUSE_INFRA_TABLE`.
 - `llm_token_usage` — one row per LLM task logged by `TokenTracker`. PARTITION BY `toYYYYMM(event_date)`, ORDER BY `(event_date, app_id, project_id, task_id, started_at)`. `event_date` is MATERIALIZED — never insert it. Two rows written per pipeline run (`SLO.intent_classification`, `SLO.response_generation`).
@@ -234,7 +234,7 @@ OPENSEARCH_PAGE_SIZE=5000
 **Import errors on startup:** Ensure `__init__.py` files exist in `intent_classifier/`, `context_adapter/`, and `utils/`.
 
 
-**`start_time`/`end_time` from API are only a fallback:** They are used only when the query contains no time reference (`timestamp source == "fallback"`). If the query mentions any time expression (regex or LLM matched), these fields are ignored regardless of their value. A minimum 1-hour gap is always enforced after resolution by shifting `start_time` backwards (`start = end - 1 hour`) — not forwards — so the query always covers a completed historical window rather than a future one.
+**`start_time`/`end_time` from API are only a fallback:** They are used only when the query contains no time reference (`timestamp source == "fallback"`). If the query mentions any time expression (regex or LLM matched), these fields are ignored regardless of their value. A minimum 2-hour gap is always enforced after resolution by shifting `start_time` backwards (`start = end - 2 hours`) — not forwards — so the query always covers a completed historical window rather than a future one.
 
 **`change_pre_post` ignores query time window:** It always fetches the single latest release from the API (sorted by date) and uses that release's `dateTimeMillis` as the anchor. The user's query start/end time is never passed to this adapter.
 

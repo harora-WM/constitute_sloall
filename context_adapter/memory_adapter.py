@@ -41,8 +41,9 @@ def fetch_behavior_service_memory(
     start_time: int,
     end_time: int,
     app_id: int,
+    project_id: int,
     sid: Optional[str] = None,
-    service_id: Optional[int] = None
+    service_id: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     """
     Fetch behavior service memory records from ClickHouse for specific application and service
@@ -54,6 +55,7 @@ def fetch_behavior_service_memory(
         start_time: Start time in Unix milliseconds (not used for filtering)
         end_time: End time in Unix milliseconds (not used for filtering)
         app_id: Application ID
+        project_id: Project ID
         sid: Service name (optional - fallback filter if service_id not provided)
         service_id: Resolved service ID from service_matcher (preferred filter)
 
@@ -64,8 +66,8 @@ def fetch_behavior_service_memory(
     clickhouse_url = config.CLICKHOUSE_URL
     auth = (config.CLICKHOUSE_USERNAME, config.CLICKHOUSE_PASSWORD)
 
-    # Build WHERE clause - filter by app_id and service_id (preferred) or service name
-    where_clause = f"WHERE application_id = {app_id}"
+    # Build WHERE clause - filter by app_id, project_id, and service_id (preferred) or service name
+    where_clause = f"WHERE application_id = {app_id}\n      AND project_id = {project_id}"
 
     if service_id is not None:
         where_clause += f"\n      AND service_id = {service_id}"
@@ -75,6 +77,7 @@ def fetch_behavior_service_memory(
     query = f"""
     SELECT
         application_id,
+        project_id,
         service_id,
         service,
         metric,
@@ -149,7 +152,8 @@ def transform_behavior_memory(
     start_time: int,
     end_time: int,
     app_id: int,
-    sid: Optional[str] = None
+    project_id: int,
+    sid: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Transform behavior memory records to LLM-ready format
@@ -238,6 +242,7 @@ def transform_behavior_memory(
         "data_source": "ai_service_behavior_memory",
         "query": {
             "application_id": app_id,
+            "project_id": project_id,
             "service": sid if sid else "ALL",
             "start_time": start_time,
             "end_time": end_time,
@@ -258,6 +263,7 @@ def fetch_patterns_by_intent(
     start_time: int,
     end_time: int,
     app_id: int,
+    project_id: int,
     service_id: Optional[int] = None,
     service_name: Optional[str] = None,
     incident_timestamp: Optional[int] = None
@@ -274,6 +280,7 @@ def fetch_patterns_by_intent(
         start_time: Start time in Unix milliseconds
         end_time: End time in Unix milliseconds
         app_id: Application ID
+        project_id: Project ID
         service_id: Optional service ID (resolved from service name)
         service_name: Optional service name (raw from intent classifier)
         incident_timestamp: Optional incident timestamp (currently not used)
@@ -283,12 +290,12 @@ def fetch_patterns_by_intent(
     """
     print("   Fetching all behavior patterns from ai_service_behavior_memory")
 
-    # Fetch all behavior memory records for the given time range and app_id
+    # Fetch all behavior memory records for the given time range and app_id/project_id
     # Prefer service_id filter (exact match) over raw service_name
-    rows = fetch_behavior_service_memory(start_time, end_time, app_id, service_name, service_id)
+    rows = fetch_behavior_service_memory(start_time, end_time, app_id, project_id, service_name, service_id)
 
     # Transform to LLM-ready format
-    result = transform_behavior_memory(rows, start_time, end_time, app_id, service_name)
+    result = transform_behavior_memory(rows, start_time, end_time, app_id, project_id, service_name)
 
     # Add metadata about which intents triggered this fetch
     result["triggered_by_intents"] = list(intents) if intents else []
@@ -310,18 +317,20 @@ if __name__ == "__main__":
     start_time = int((now - timedelta(days=30)).timestamp() * 1000)
 
     # Example parameters
-    APP_ID = 31854  # WMPlatform
+    APP_ID = 31854      # WMPlatform
+    PROJECT_ID = 215853
     SID = None  # None = fetch all services, or specify like "payment-api"
 
     print("Fetching AI Service Behavior Memory")
     print("=" * 50)
     print(f"Application ID: {APP_ID}")
+    print(f"Project ID: {PROJECT_ID}")
     print(f"Service: {SID if SID else 'ALL'}")
     print(f"Time Range: {datetime.fromtimestamp(start_time/1000)} to {datetime.fromtimestamp(end_time/1000)}")
     print()
 
-    raw_rows = fetch_behavior_service_memory(start_time, end_time, APP_ID, SID)
-    llm_output = transform_behavior_memory(raw_rows, start_time, end_time, APP_ID, SID)
+    raw_rows = fetch_behavior_service_memory(start_time, end_time, APP_ID, PROJECT_ID, SID)
+    llm_output = transform_behavior_memory(raw_rows, start_time, end_time, APP_ID, PROJECT_ID, SID)
 
     output_file = "ai_service_behavior_memory_output.json"
     with open(output_file, "w") as f:
