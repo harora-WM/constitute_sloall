@@ -215,13 +215,12 @@ if __name__ == "__main__":
     # Configuration parameters
     username = config.USERNAME
     password = config.PASSWORD
-    start_date = "1775500200000"
-    end_date = "1776882600000"
+    from datetime import datetime, timedelta
+    _now = datetime.now(timezone.utc)
+    end_date = str(int(_now.timestamp() * 1000))
+    start_date = str(int((_now - timedelta(days=30)).timestamp() * 1000))
     application_slo_filters = [
-        {"id": 32707,  "sloTypes": ["RESPONSE"]},
-        {"id": 215853, "sloTypes": ["ERROR", "RESPONSE"]},
-        {"id": 217602, "sloTypes": ["ERROR"]},
-        {"id": 32722,  "sloTypes": ["ERROR"]},
+        {"id": config.PROJECT_ID, "sloTypes": ["ERROR", "RESPONSE"]},
     ]
     output_file = "alerts_action_count_output.json"
 

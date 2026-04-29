@@ -10,7 +10,7 @@ STATE:
       data_sources:
         - java_stats_api
         - postgres
-        - alerts_count
+        # - alerts_count  # DISABLED
 
     SERVICE_HEALTH:
       description: "Individual service health check"
@@ -20,7 +20,7 @@ STATE:
         - "Status of user-service?"
       data_sources:
         - java_stats_api
-        - alerts_count
+        # - alerts_count  # DISABLED
 
     SLO_STATUS:
       description: "SLO breach and compliance status"
@@ -31,25 +31,27 @@ STATE:
       data_sources:
         - postgres
 
-    ALERT_STATUS:
-      description: "Active alerts information"
-      examples:
-        - "What alerts are active?"
-        - "Show me current alerts"
-        - "Any active warnings?"
-      data_sources:
-        - postgres
-        - alerts_count
+    # DISABLED: ALERT_STATUS
+    # ALERT_STATUS:
+    #   description: "Active alerts information"
+    #   examples:
+    #     - "What alerts are active?"
+    #     - "Show me current alerts"
+    #     - "Any active warnings?"
+    #   data_sources:
+    #     - postgres
+    #     - alerts_count
 
-    INCIDENT_STATUS:
-      description: "Open incidents tracking"
-      examples:
-        - "What incidents are open?"
-        - "Show active incidents"
-        - "Current incident status?"
-      data_sources:
-        - postgres
-        - alerts_count
+    # DISABLED: INCIDENT_STATUS
+    # INCIDENT_STATUS:
+    #   description: "Open incidents tracking"
+    #   examples:
+    #     - "What incidents are open?"
+    #     - "Show active incidents"
+    #     - "Current incident status?"
+    #   data_sources:
+    #     - postgres
+    #     - alerts_count
 
 TREND:
   description: "How things are changing - Drift, degradation, improvement"
@@ -137,7 +139,7 @@ CAUSE:
         - java_stats_api
         - opensearch
         - clickhouse
-        - alerts_count
+        # - alerts_count  # DISABLED
         - change_impact
 
     ROOT_CAUSE_MULTI:
@@ -150,19 +152,20 @@ CAUSE:
         - java_stats_api
         - opensearch
         - clickhouse
-        - alerts_count
+        # - alerts_count  # DISABLED
         - change_impact
 
-    ALERT_DEBUG:
-      description: "Why specific alert triggered"
-      examples:
-        - "Why did this alert fire?"
-        - "Alert trigger reason"
-        - "What caused this notification?"
-      data_sources:
-        - postgres
-        - opensearch
-        - alerts_count
+    # DISABLED: ALERT_DEBUG
+    # ALERT_DEBUG:
+    #   description: "Why specific alert triggered"
+    #   examples:
+    #     - "Why did this alert fire?"
+    #     - "Alert trigger reason"
+    #     - "What caused this notification?"
+    #   data_sources:
+    #     - postgres
+    #     - opensearch
+    #     - alerts_count
 
     CONFIG_DRIFT_CAUSE:
       description: "Configuration change impact analysis"
@@ -187,40 +190,7 @@ IMPACT:
       data_sources:
         - java_stats_api
         - clickhouse
-        - alerts_count
-
-    USER_JOURNEY_IMPACT:
-      description: "User flow/journey disruption — end-to-end health of multi-step business flows"
-      examples:
-        - "Impact on checkout flow?"
-        - "User journey affected"
-        - "Customer experience impact"
-        - "How are user journeys performing?"
-        - "Show user journey health"
-        - "Which user flows are broken?"
-        - "What's the success rate of our critical user journeys?"
-        - "Are any end-to-end flows failing?"
-        - "Show journey performance for the last 24 hours"
-      data_sources:
-        - java_stats_api
-        - clickhouse
-        - journey_health_api
-
-    GOLDEN_PATH_IMPACT:
-      description: "Critical business flow impact — top EB-consuming transactions and revenue-critical paths"
-      examples:
-        - "Business impact of SLO breach?"
-        - "Revenue impact analysis"
-        - "Critical path disruption"
-        - "Which transactions are consuming the most error budget?"
-        - "Show me the top quadrant EB transactions"
-        - "What are the most critical failing endpoints?"
-        - "Which transactions are in the danger quadrant?"
-        - "Show top-5 worst error budget transactions"
-      data_sources:
-        - java_stats_api
-        - clickhouse
-        - golden_path_api
+        # - alerts_count  # DISABLED
 
     CUSTOMER_IMPACT:
       description: "Customer-specific impact analysis"
@@ -373,17 +343,18 @@ EVIDENCE:
         - opensearch
         - change_impact
 
-INFRA:
-  description: "Host-level infrastructure metrics - CPU, memory, disk (current or historical based on time range)"
-  intents:
-    INFRA_METRICS:
-      description: "Host-level infrastructure resource utilization (CPU, memory, disk) collected by SolarWinds/Zabbix; current snapshot or historical trend depending on query time range. Aggregated per host, not per service."
-      examples:
-        - "What's the current CPU utilization?"
-        - "Show memory usage in the last 24 hours"
-        - "Any hosts with high CPU right now?"
-        - "Disk usage trend this week"
-        - "Which hosts are memory-saturated?"
-        - "p95 CPU over the last 6 hours"
-      data_sources:
-        - clickhouse_infra
+# DISABLED: INFRA category
+# INFRA:
+#   description: "Host-level infrastructure metrics - CPU, memory, disk (current or historical based on time range)"
+#   intents:
+#     INFRA_METRICS:
+#       description: "Host-level infrastructure resource utilization (CPU, memory, disk) collected by SolarWinds/Zabbix; current snapshot or historical trend depending on query time range. Aggregated per host, not per service."
+#       examples:
+#         - "What's the current CPU utilization?"
+#         - "Show memory usage in the last 24 hours"
+#         - "Any hosts with high CPU right now?"
+#         - "Disk usage trend this week"
+#         - "Which hosts are memory-saturated?"
+#         - "p95 CPU over the last 6 hours"
+#       data_sources:
+#         - clickhouse_infra

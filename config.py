@@ -23,7 +23,7 @@ MAX_TOKENS = int(os.getenv("MAX_TOKENS", "500"))
 TEMPERATURE = float(os.getenv("TEMPERATURE", "0.0"))
 
 # ── Layer 2 LLM (response generation) ─────────────────────────────────────────
-RESPONSE_MAX_TOKENS = int(os.getenv("RESPONSE_MAX_TOKENS", "2000"))
+RESPONSE_MAX_TOKENS = int(os.getenv("RESPONSE_MAX_TOKENS", "5000"))
 RESPONSE_TEMPERATURE = float(os.getenv("RESPONSE_TEMPERATURE", "0.3"))
 
 # ── Keycloak ───────────────────────────────────────────────────────────────────
@@ -38,10 +38,11 @@ JAVA_STATS_API_URL = os.getenv(
     "JAVA_STATS_API_URL",
     "https://wm-sandbox-1.watermelon.us/services/wmerrorbudgetstatisticsservice/api/transactions/distinct/top-5/ALL"
 )
-ALERTS_COUNT_API_URL = os.getenv(
-    "ALERTS_COUNT_API_URL",
-    "https://wm-sandbox-1.watermelon.us/services/wmerrorbudgetalertandnotificationservice/api/alerts-action/count"
-)
+# DISABLED: alerts_count adapter
+# ALERTS_COUNT_API_URL = os.getenv(
+#     "ALERTS_COUNT_API_URL",
+#     "https://wm-sandbox-1.watermelon.us/services/wmerrorbudgetalertandnotificationservice/api/alerts-action/count"
+# )
 RELEASE_HISTORIES_API_URL = os.getenv(
     "RELEASE_HISTORIES_API_URL",
     "https://wm-sandbox-1.watermelon.us/services/wmebonboarding/api/release-histories/application"
@@ -49,18 +50,6 @@ RELEASE_HISTORIES_API_URL = os.getenv(
 RELEASE_IMPACT_API_URL = os.getenv(
     "RELEASE_IMPACT_API_URL",
     "https://wm-sandbox-1.watermelon.us/services/wmerrorbudgetstatisticsservice/api/release-impact/transactions/top-5/POST"
-)
-GOLDEN_PATH_EB_API_URL = os.getenv(
-    "GOLDEN_PATH_EB_API_URL",
-    "https://wm-sandbox-1.watermelon.us/services/wmerrorbudgetstatisticsservice/api/transactions/top-5/quadrant/EB"
-)
-GOLDEN_PATH_RESPONSE_API_URL = os.getenv(
-    "GOLDEN_PATH_RESPONSE_API_URL",
-    "https://wm-sandbox-1.watermelon.us/services/wmerrorbudgetstatisticsservice/api/transactions/top-5/quadrant/RESPONSE"
-)
-JOURNEY_HEALTH_API_URL = os.getenv(
-    "JOURNEY_HEALTH_API_URL",
-    "https://wm-sandbox-1.watermelon.us/services/wmerrorbudgetstatisticsservice/api/user-journeys/performance"
 )
 
 # ── Credentials ────────────────────────────────────────────────────────────────
@@ -88,7 +77,9 @@ CLICKHOUSE_URL = os.getenv(
 CLICKHOUSE_USERNAME = os.getenv("CLICKHOUSE_USERNAME", "wm_test")
 CLICKHOUSE_PASSWORD = os.getenv("CLICKHOUSE_PASSWORD", "Watermelon@123")
 CLICKHOUSE_DATABASE = os.getenv("CLICKHOUSE_DATABASE", "metrics")
-CLICKHOUSE_INFRA_TABLE = os.getenv("CLICKHOUSE_INFRA_TABLE", "infra_data")
+# DISABLED: clickhouse_infra adapter
+# CLICKHOUSE_INFRA_TABLE = os.getenv("CLICKHOUSE_INFRA_TABLE", "infra_data")
+CLICKHOUSE_SERVICES_TABLE = os.getenv("CLICKHOUSE_SERVICES_TABLE", "ai_service_features_hourly")
 
 # ── OpenSearch ─────────────────────────────────────────────────────────────────
 OPENSEARCH_HOST = os.getenv(

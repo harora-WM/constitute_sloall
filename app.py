@@ -3,6 +3,10 @@ Streamlit UI for the Conversational SLO Manager.
 Talks to the FastAPI backend running at http://localhost:8000.
 """
 
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import config
 import requests
 import streamlit as st
 from datetime import datetime
@@ -13,10 +17,8 @@ API_URL = "http://localhost:8000"
 SOURCE_DISPLAY_NAMES = {
     "java_stats_api":    "Real-Time Service Metrics",
     "clickhouse":        "Historical Behavior Patterns",
-    "clickhouse_infra":  "Infrastructure Metrics",
-    "golden_path_api":   "Transaction Quadrant Analysis",
-    "journey_health_api": "User Journey Performance",
-    "alerts_count":      "Alert & Incident History",
+    # "clickhouse_infra":  "Infrastructure Metrics",    # DISABLED
+    # "alerts_count":      "Alert & Incident History",  # DISABLED
     "change_impact":     "Deployment & Change Impact",
     "postgres":          "SLO Definitions",
     "opensearch":        "Logs & Traces",
@@ -32,27 +34,8 @@ def render_source_stat(source: str, data: dict) -> None:
         st.json(data["stats"])
     elif "total_records" in data:
         st.markdown(f"**{label}:** `{data['total_records']}` records")
-    elif "summary_EB" in data:
-        s_eb   = data["summary_EB"]
-        s_resp = data["summary_response"]
-        threshold = data.get("filters", {}).get("min_absolute_error_rate", "—")
-        st.markdown(
-            f"**{label}:** "
-            f"EB `{s_eb['total_transactions']}` transactions "
-            f"(hvhe={s_eb['hvhe_transactions']}, hvle={s_eb['hvle_transactions']}, "
-            f"lvhe={s_eb['lvhe_transactions']}, lvle={s_eb['lvle_transactions']}) · "
-            f"RESPONSE `{s_resp['total_transactions']}` transactions · "
-            f"filter: absoluteErrorRate > {threshold}"
-        )
     elif "records" in data and isinstance(data["records"], list) and data["records"]:
-        record = data["records"][0]
-        journey_count = len(record.get("summaries", []))
-        unhealthy = record.get("unHealthyCount", "—")
-        healthy_rate = record.get("healthyRate", "—")
-        st.markdown(
-            f"**{label}:** `{journey_count}` journeys · "
-            f"unhealthy={unhealthy} · healthyRate={healthy_rate}"
-        )
+        st.markdown(f"**{label}:** `{len(data['records'])}` records")
 
 st.set_page_config(
     page_title="SLO Advisor",
@@ -68,8 +51,8 @@ st.caption("Ask anything about your service reliability in plain English.")
 with st.sidebar:
     st.header("Settings")
     api_base = st.text_input("API URL", value=API_URL)
-    app_id = st.number_input("App ID", value=31854, step=1)
-    project_id = st.number_input("Project ID", value=215853, step=1)
+    app_id = st.number_input("App ID", value=config.APP_ID, step=1)
+    project_id = st.number_input("Project ID", value=config.PROJECT_ID, step=1)
 
     st.divider()
     st.subheader("Time Override")

@@ -1,3 +1,7 @@
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import config
 from pydantic import BaseModel, Field
 from typing import Any, Dict, List, Optional
 
@@ -7,8 +11,8 @@ from typing import Any, Dict, List, Optional
 class QueryRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=2000,
                        description="Natural language SLO query")
-    app_id: int = Field(default=31854, description="Application ID")
-    project_id: int = Field(default=215853, description="Project ID")
+    app_id: int = Field(default=config.APP_ID, description="Application ID")
+    project_id: int = Field(default=config.PROJECT_ID, description="Project ID")
     start_time: Optional[int] = Field(default=None, description="Start time in Unix epoch milliseconds (e.g. 1774432047000). Only used when the query contains no time reference; ignored if the query mentions a time expression.")
     end_time: Optional[int] = Field(default=None, description="End time in Unix epoch milliseconds. Only used when the query contains no time reference; ignored if the query mentions a time expression.")
 

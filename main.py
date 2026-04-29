@@ -10,7 +10,6 @@ import json
 import logging
 import traceback
 from contextlib import asynccontextmanager
-from datetime import datetime
 from typing import Dict, List, Any, Optional
 from dotenv import load_dotenv
 import uvicorn
@@ -25,16 +24,14 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'intent_classifier'))
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'context_adapter'))
 
+from fetch_services import fetch_distinct_services, create_service_mapping, save_to_yaml
 from intent_classifier.intent_classifier import IntentClassifier
 from context_adapter.java_stats import fetch_api_data, transform_to_llm_format
 from context_adapter.memory_adapter import fetch_behavior_service_memory, transform_behavior_memory, fetch_patterns_by_intent
-from context_adapter.alert_count import fetch_alerts_for_orchestrator
 from context_adapter.change_pre_post import fetch_change_impact_for_orchestrator
-from context_adapter.infra_adapter import fetch_infra_for_orchestrator
-from context_adapter.golden_path_adapter import fetch_golden_path_for_orchestrator
-from context_adapter.journey_health_adapter import fetch_journey_health_for_orchestrator
+# from context_adapter.alert_count import fetch_alerts_for_orchestrator  # DISABLED
+# from context_adapter.infra_adapter import fetch_infra_for_orchestrator  # DISABLED
 from utils.service_matcher import ServiceMatcher
-from utils.token_tracker import TokenTracker
 from llm_response_generator import LLMResponseGenerator
 
 
@@ -50,15 +47,32 @@ class SLOOrchestrator:
         """Initialize orchestrator with intent classifier and configuration"""
         load_dotenv()
 
+        # Configuration from .env via config module (must be set before service refresh)
+        self.app_id = config.APP_ID
+        self.project_id = config.PROJECT_ID
+        self.java_stats_username = config.USERNAME
+        self.java_stats_password = config.PASSWORD
+
         # Initialize intent classifier
         print("Initializing Intent Classifier...")
         self.classifier = IntentClassifier()
         print("✅ Intent Classifier ready")
 
+        # Refresh services.yaml from ClickHouse before loading the matcher
+        print("Refreshing services.yaml from ClickHouse...")
+        _services_yaml_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "services.yaml")
+        try:
+            services = fetch_distinct_services(self.app_id)
+            mapping = create_service_mapping(services)
+            save_to_yaml(mapping, _services_yaml_path)
+            print(f"✅ services.yaml refreshed ({len(services)} services)")
+        except Exception as e:
+            print(f"⚠️  Could not refresh services.yaml: {e} — using existing file")
+
         # Initialize service matcher
         print("Initializing Service Matcher...")
         try:
-            self.service_matcher = ServiceMatcher("services.yaml")
+            self.service_matcher = ServiceMatcher(_services_yaml_path)
             print(f"✅ Service Matcher ready ({len(self.service_matcher.services_by_id)} services loaded)")
         except FileNotFoundError:
             print("⚠️  services.yaml not found - service matching disabled")
@@ -69,11 +83,6 @@ class SLOOrchestrator:
         self.response_generator = LLMResponseGenerator()
         print("✅ LLM Response Generator ready\n")
 
-        # Configuration from .env via config module
-        self.app_id = config.APP_ID
-        self.project_id = config.PROJECT_ID
-        self.java_stats_username = config.USERNAME
-        self.java_stats_password = config.PASSWORD
 
     def process_query(self, user_query: str, app_id: int = None, project_id: int = None,
                       start_time: int = None, end_time: int = None) -> Dict[str, Any]:
@@ -92,8 +101,6 @@ class SLOOrchestrator:
         effective_app_id = app_id if app_id is not None else self.app_id
         effective_project_id = project_id if project_id is not None else self.project_id
 
-        tracker = TokenTracker(effective_app_id, effective_project_id, config.USERNAME)
-
         print("="*80)
         print("SLO ORCHESTRATOR - Processing Query")
         print("="*80)
@@ -101,23 +108,7 @@ class SLOOrchestrator:
 
         # Step 1: Classify intent
         print("🔍 Step 1: Analyzing intent...")
-        _t0 = datetime.now()
         classification_result = self.classifier.classify(user_query)
-        _t1 = datetime.now()
-        _usage = self.classifier.last_usage
-        tracker.log_task(
-            task_name="SLO.intent_classification",
-            model_name=self.classifier.model_id,
-            started_at=_t0,
-            completed_at=_t1,
-            input_tokens=_usage.get('input_tokens', 0),
-            output_tokens=_usage.get('output_tokens', 0),
-            task_status="failed" if "error" in classification_result else "completed",
-            response_status=self.classifier.last_http_status,
-            had_error="error" in classification_result,
-            error_type=classification_result.get("error") if "error" in classification_result else None,
-            token_usage_missing=not bool(_usage),
-        )
 
         if "error" in classification_result:
             return {
@@ -235,72 +226,39 @@ class SLOOrchestrator:
             else:
                 print("   ⚠️  ClickHouse returned no data\n")
 
-        # Fetch from ClickHouse infra_data (separate table, separate adapter)
-        if 'clickhouse_infra' in data_sources:
-            print("   → Fetching from ClickHouse (infra metrics)...")
-            infra_data = self._fetch_infra_adapter(
-                start_time=start_time,
-                end_time=end_time,
-                app_id=effective_app_id,
-                project_id=effective_project_id
-            )
-            if infra_data:
-                adapter_data['clickhouse_infra'] = infra_data
-                print("   ✅ Infra metrics retrieved\n")
-            else:
-                print("   ⚠️  Infra adapter returned no data\n")
+        # DISABLED: Infra adapter
+        # if 'clickhouse_infra' in data_sources:
+        #     print("   → Fetching from ClickHouse (infra metrics)...")
+        #     infra_data = self._fetch_infra_adapter(
+        #         start_time=start_time,
+        #         end_time=end_time,
+        #         app_id=effective_app_id,
+        #         project_id=effective_project_id
+        #     )
+        #     if infra_data:
+        #         adapter_data['clickhouse_infra'] = infra_data
+        #         print("   ✅ Infra metrics retrieved\n")
+        #     else:
+        #         print("   ⚠️  Infra adapter returned no data\n")
 
-        # Fetch from Golden Path API (top-5 quadrant EB transactions)
-        if 'golden_path_api' in data_sources:
-            print("   → Fetching from Golden Path API (quadrant EB + RESPONSE transactions)...")
-            golden_path_data = self._fetch_golden_path(
-                app_id=effective_app_id,
-                project_id=effective_project_id,
-                start_time=start_time,
-                end_time=end_time,
-            )
-            if golden_path_data:
-                adapter_data['golden_path_api'] = golden_path_data
-                eb_total = golden_path_data.get('summary_EB', {}).get('total_transactions', 0)
-                resp_total = golden_path_data.get('summary_response', {}).get('total_transactions', 0)
-                print(f"   ✅ Golden Path data retrieved (EB={eb_total}, RESPONSE={resp_total} transactions)\n")
-            else:
-                print("   ⚠️  Golden Path API returned no data\n")
-
-        # Fetch from Journey Health API (user journey performance)
-        if 'journey_health_api' in data_sources:
-            print("   → Fetching from Journey Health API (user journey performance)...")
-            journey_health_data = self._fetch_journey_health(
-                app_id=effective_app_id,
-                project_id=effective_project_id,
-                start_time=start_time,
-                end_time=end_time,
-            )
-            if journey_health_data:
-                adapter_data['journey_health_api'] = journey_health_data
-                total = len(journey_health_data.get('records', [{}])[0].get('summaries', []))
-                print(f"   ✅ Journey Health data retrieved ({total} journey summaries)\n")
-            else:
-                print("   ⚠️  Journey Health API returned no data\n")
-
-        # Fetch from Alerts Count API (if in data_sources)
-        if 'alerts_count' in data_sources:
-            print("   → Fetching from Alerts Count API...")
-            alerts_data = self._fetch_alerts_count(
-                start_time_ms=str(start_time),
-                end_time_ms=str(end_time),
-                app_id=effective_app_id,
-                project_id=effective_project_id
-            )
-            if alerts_data:
-                adapter_data['alerts_count'] = alerts_data
-                alert_summary = alerts_data.get('alerts_count', {}).get('alert', {}) if isinstance(alerts_data.get('alerts_count'), dict) else {}
-                total = alert_summary.get('totalCount')
-                open_c = alert_summary.get('openCount')
-                closed = alert_summary.get('closedCount')
-                print(f"   ✅ Alerts Count data retrieved (total: {total}, open: {open_c}, closed: {closed})\n")
-            else:
-                print("   ⚠️  Alerts Count API returned no data\n")
+        # DISABLED: Alerts Count adapter
+        # if 'alerts_count' in data_sources:
+        #     print("   → Fetching from Alerts Count API...")
+        #     alerts_data = self._fetch_alerts_count(
+        #         start_time_ms=str(start_time),
+        #         end_time_ms=str(end_time),
+        #         app_id=effective_app_id,
+        #         project_id=effective_project_id
+        #     )
+        #     if alerts_data:
+        #         adapter_data['alerts_count'] = alerts_data
+        #         alert_summary = alerts_data.get('alerts_count', {}).get('alert', {}) if isinstance(alerts_data.get('alerts_count'), dict) else {}
+        #         total = alert_summary.get('totalCount')
+        #         open_c = alert_summary.get('openCount')
+        #         closed = alert_summary.get('closedCount')
+        #         print(f"   ✅ Alerts Count data retrieved (total: {total}, open: {open_c}, closed: {closed})\n")
+        #     else:
+        #         print("   ⚠️  Alerts Count API returned no data\n")
 
         # Fetch from Change Impact API (if in data_sources)
         if 'change_impact' in data_sources:
@@ -354,26 +312,9 @@ class SLOOrchestrator:
         print(f"Total data keys: {len(adapter_data)}\n")
 
         # Step 4: Generate conversational response using LLM
-        _t2 = datetime.now()
         conversational_result = self.response_generator.generate_response(
             user_query=user_query,
             orchestrator_output=result
-        )
-        _t3 = datetime.now()
-        _resp_usage = self.response_generator.last_usage
-        _resp_had_error = not conversational_result.get("success", True)
-        tracker.log_task(
-            task_name="SLO.response_generation",
-            model_name=self.response_generator.model_id,
-            started_at=_t2,
-            completed_at=_t3,
-            input_tokens=_resp_usage.get('input_tokens', 0),
-            output_tokens=_resp_usage.get('output_tokens', 0),
-            task_status="failed" if _resp_had_error else "completed",
-            response_status=self.response_generator.last_http_status,
-            had_error=_resp_had_error,
-            error_type=conversational_result.get("error") if _resp_had_error else None,
-            token_usage_missing=not bool(_resp_usage),
         )
 
         # Add conversational response to result
@@ -486,109 +427,45 @@ class SLOOrchestrator:
             print(f"   ✗ Error fetching ClickHouse data: {e}")
             return None
 
-    def _fetch_infra_adapter(
-        self,
-        start_time: int,
-        end_time: int,
-        app_id: int,
-        project_id: int
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Fetch infrastructure metrics from ClickHouse infra_data table.
+    # DISABLED: _fetch_infra_adapter
+    # def _fetch_infra_adapter(
+    #     self,
+    #     start_time: int,
+    #     end_time: int,
+    #     app_id: int,
+    #     project_id: int
+    # ) -> Optional[Dict[str, Any]]:
+    #     try:
+    #         return fetch_infra_for_orchestrator(
+    #             app_id=app_id,
+    #             project_id=project_id,
+    #             start_time=start_time,
+    #             end_time=end_time
+    #         )
+    #     except Exception as e:
+    #         print(f"   ✗ Error fetching infra metrics: {e}")
+    #         return None
 
-        Args:
-            start_time: Start time in milliseconds
-            end_time: End time in milliseconds
-            app_id: Application ID
-            project_id: Project ID
-
-        Returns:
-            Infra metrics envelope or None if failed
-        """
-        try:
-            return fetch_infra_for_orchestrator(
-                app_id=app_id,
-                project_id=project_id,
-                start_time=start_time,
-                end_time=end_time
-            )
-        except Exception as e:
-            print(f"   ✗ Error fetching infra metrics: {e}")
-            return None
-
-    def _fetch_golden_path(
-        self,
-        app_id: int,
-        project_id: int,
-        start_time: int,
-        end_time: int,
-    ) -> Optional[Dict[str, Any]]:
-        """Fetch top-5 quadrant EB transactions from the Golden Path API."""
-        try:
-            return fetch_golden_path_for_orchestrator(
-                app_id=app_id,
-                project_id=project_id,
-                start_time=start_time,
-                end_time=end_time,
-                username=self.java_stats_username,
-                password=self.java_stats_password,
-            )
-        except Exception as e:
-            print(f"   ✗ Error fetching Golden Path data: {e}")
-            return None
-
-    def _fetch_journey_health(
-        self,
-        app_id: int,
-        project_id: int,
-        start_time: int,
-        end_time: int,
-        range_type: str = "CUSTOM",
-    ) -> Optional[Dict[str, Any]]:
-        """Fetch user journey performance records from the Journey Health API."""
-        try:
-            return fetch_journey_health_for_orchestrator(
-                app_id=app_id,
-                project_id=project_id,
-                start_time=start_time,
-                end_time=end_time,
-                range_type=range_type,
-                username=self.java_stats_username,
-                password=self.java_stats_password,
-            )
-        except Exception as e:
-            print(f"   ✗ Error fetching Journey Health data: {e}")
-            return None
-
-    def _fetch_alerts_count(
-        self,
-        start_time_ms: str,
-        end_time_ms: str,
-        app_id: int,
-        project_id: int = None
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Fetch alerts count data from alerts-action API
-
-        Args:
-            start_time_ms: Start time in milliseconds (string)
-            end_time_ms: End time in milliseconds (string)
-
-        Returns:
-            Alerts count data or None if failed
-        """
-        try:
-            return fetch_alerts_for_orchestrator(
-                start_time_ms=start_time_ms,
-                end_time_ms=end_time_ms,
-                app_id=app_id,
-                project_id=project_id if project_id is not None else self.project_id,
-                username=self.java_stats_username,
-                password=self.java_stats_password
-            )
-        except Exception as e:
-            print(f"   ✗ Error fetching alerts count: {e}")
-            return None
+    # DISABLED: _fetch_alerts_count
+    # def _fetch_alerts_count(
+    #     self,
+    #     start_time_ms: str,
+    #     end_time_ms: str,
+    #     app_id: int,
+    #     project_id: int = None
+    # ) -> Optional[Dict[str, Any]]:
+    #     try:
+    #         return fetch_alerts_for_orchestrator(
+    #             start_time_ms=start_time_ms,
+    #             end_time_ms=end_time_ms,
+    #             app_id=app_id,
+    #             project_id=project_id if project_id is not None else self.project_id,
+    #             username=self.java_stats_username,
+    #             password=self.java_stats_password
+    #         )
+    #     except Exception as e:
+    #         print(f"   ✗ Error fetching alerts count: {e}")
+    #         return None
 
     def _fetch_change_impact(self, app_id: int, project_id: int = None) -> Optional[Dict[str, Any]]:
         """

@@ -35,46 +35,27 @@ data_sources:
     pool_size: 5
     compression: true
 
-  clickhouse_infra:
-    type: analytical_database
-    description: "Host-level infrastructure metrics (CPU, memory, disk) from dedicated ClickHouse table, collected by SolarWinds and Zabbix"
-    capabilities:
-      - cpu_metrics
-      - memory_metrics
-      - disk_metrics
-      - resource_trend
-    pool_size: 5
-    compression: true
+  # DISABLED: clickhouse_infra
+  # clickhouse_infra:
+  #   type: analytical_database
+  #   description: "Host-level infrastructure metrics (CPU, memory, disk) from dedicated ClickHouse table, collected by SolarWinds and Zabbix"
+  #   capabilities:
+  #     - cpu_metrics
+  #     - memory_metrics
+  #     - disk_metrics
+  #     - resource_trend
+  #   pool_size: 5
+  #   compression: true
 
-  golden_path_api:
-    type: rest_api
-    description: "Top-5 quadrant EB transactions — identifies critical business paths with highest error-budget consumption"
-    capabilities:
-      - critical_path_analysis
-      - error_budget_quadrant
-      - top_impacted_transactions
-    timeout: 30
-    retry_attempts: 3
-
-  journey_health_api:
-    type: rest_api
-    description: "User journey performance data — end-to-end health of multi-step business flows"
-    capabilities:
-      - journey_success_rate
-      - journey_latency
-      - flow_health_status
-      - user_experience_metrics
-    timeout: 30
-    retry_attempts: 3
-
-  alerts_count:
-    type: rest_api
-    description: "Alert action counts (open/closed/reoccurring) for the query time window"
-    capabilities:
-      - alert_count
-      - incident_signals
-    timeout: 30
-    retry_attempts: 3
+  # DISABLED: alerts_count
+  # alerts_count:
+  #   type: rest_api
+  #   description: "Alert action counts (open/closed/reoccurring) for the query time window"
+  #   capabilities:
+  #     - alert_count
+  #     - incident_signals
+  #   timeout: 30
+  #   retry_attempts: 3
 
   change_impact:
     type: rest_api
@@ -105,7 +86,7 @@ intent_data_sources:
   STATE:
     - java_stats_api
     - postgres
-    - alerts_count
+    # - alerts_count  # DISABLED
 
   TREND:
     - java_stats_api
@@ -119,15 +100,13 @@ intent_data_sources:
     - opensearch
     - postgres
     - clickhouse
-    - alerts_count
+    # - alerts_count  # DISABLED
     - change_impact
 
   IMPACT:
     - java_stats_api
     - clickhouse
-    - golden_path_api
-    - journey_health_api
-    - alerts_count
+    # - alerts_count  # DISABLED
 
   ACTION:
     - clickhouse
@@ -148,5 +127,6 @@ intent_data_sources:
     - clickhouse
     - change_impact
 
-  INFRA:
-    - clickhouse_infra
+  # DISABLED: INFRA
+  # INFRA:
+  #   - clickhouse_infra

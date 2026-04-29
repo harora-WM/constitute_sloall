@@ -113,9 +113,11 @@ if __name__ == "__main__":
 
     app_id = config.APP_ID
     project_id = config.PROJECT_ID
-    # Example window: 2026-02-19 .. 2026-02-24 (UTC) in epoch ms
-    start_time = 1775804400000
-    end_time = 1776168000000
+    # Time range: last 7 days
+    from datetime import datetime, timedelta, timezone
+    _now = datetime.now(timezone.utc)
+    end_time = int(_now.timestamp() * 1000)
+    start_time = int((_now - timedelta(days=7)).timestamp() * 1000)
 
     print(f"Application ID : {app_id}")
     print(f"Project ID     : {project_id}")

@@ -299,9 +299,11 @@ if __name__ == "__main__":
     project_id = config.PROJECT_ID
     index = 'DAILY'
 
-    # Time range (Unix timestamps in milliseconds)
-    start_time = '1774752587000'
-    end_time = '1777430987000'
+    # Time range: last 30 days
+    from datetime import datetime, timedelta, timezone
+    _now = datetime.now(timezone.utc)
+    end_time = str(int(_now.timestamp() * 1000))
+    start_time = str(int((_now - timedelta(days=30)).timestamp() * 1000))
 
     # Fetch data from API
     print("\n--- Fetching data from API ---")

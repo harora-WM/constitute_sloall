@@ -34,12 +34,66 @@ class LLMResponseGenerator:
 
         self.system_prompt = self._build_system_prompt()
 
-        # Populated after each _call_bedrock() for token tracking
-        self.last_usage: dict = {}
-        self.last_http_status: str = "200"
 
     def _build_system_prompt(self) -> str:
         """Build comprehensive system prompt for SLO analysis"""
+
+        # ── DISABLED SECTIONS ────────────────────────────────────────────────
+        # To re-enable: add the variable back into the return string at the
+        # marked location (search for "# INSERT_SECTION_3" etc.)
+
+        _SECTION_3_ALERT = """
+### 3. Alert & Incident History
+Your source for **alert and incident tracking data**. Use this to understand the frequency and severity of SLO breaches.
+
+- Alert counts: total, open, closed, recurring alerts
+- Alert severity levels (1-7, where higher = more escalations)
+- Mean Time To Recovery (MTTR) for incidents
+- Alert occurrence frequency and reoccurrence patterns
+- Time ranges: start/end timestamps for each alert
+- SLO breach descriptions with actual vs. target values
+
+**CRITICAL — Scope of Alert Data:**
+- Alert data is **always APPLICATION-LEVEL** — it is filtered by `project_id` only, never by individual service
+- Alerts with `escalationFor: "APPLICATION"` and `sid: <project_id>` are **application-wide** SLO breaches, NOT specific to any single service
+- **Never attribute application-level alerts to a specific service** that was mentioned in the query — they reflect the entire application's health
+- The `occurrence` field on an alert is the **alert rule's notification interval count**, NOT the number of times the SLO has historically been breached
+- If the query is about a specific service, use alert data only for application-wide context, and clearly state that service-level alert filtering is not available
+"""
+
+        _SECTION_5_INFRA = """
+### 5. Host-Level Infrastructure Metrics
+Your source for **host-level infrastructure metrics** (CPU, memory, disk) collected by SolarWinds and Zabbix.
+
+- Records are **per host, per `metric_type`, per `record_time` timestamp** — there is one row for each (host, metric_type, timestamp) combination.
+- The `metric_type` field encodes both the monitoring tool and the resource class (e.g. `solarwinds_cpu`, `zabbix_memory`, `solarwinds_disk`). The suffix (`_cpu` / `_memory` / `_disk`) tells you the resource class.
+- The `tool_name` field is either `SOLARWINDS` or `ZABBIX`. The same host can be reported by **both tools** — if both appear for the same host/resource, call that out explicitly and prefer the reading that matches recent operator expectations rather than silently averaging across tools.
+- Value fields and how to use them:
+  - **Utilization / typical load** → use `val_avg` or central percentiles (`p50`, `p75`).
+  - **Saturation / worst-case pressure** → use `val_max` together with tail percentiles (`p95`, `p99`).
+  - `val_min` / `p25` are useful for establishing a floor or detecting idle hosts.
+  - `val_sum` and `total_req_count` describe the aggregation window; do not misread them as utilization.
+- Granularity is **per host, NOT per service**. This data cannot be filtered by service name. If the user asks about a specific service's infra, state that this data is host-level and you don't have a service→host mapping.
+- **Time semantics**: `record_time` falls inside the resolved query window. The same window may be a "current snapshot" (short window ending now) or a "historical trend" (longer past window) — the user's question tells you which framing to use.
+- Only CPU, memory, and disk are available. **No network metrics**. If the user asks about network, say so and offer the available resource classes instead.
+"""
+
+        _ALERT_INTERPRETATION_RULES = """
+### Alert Severity Levels
+| Level | Interpretation |
+|---|---|
+| 1-2 | Low severity — single escalation, resolved quickly |
+| 3-4 | Medium severity — multiple escalations, longer resolution time |
+| 5-7 | High severity — critical incidents with extensive escalations |
+
+### Alert Status and Patterns
+- **OPEN alerts**: Currently active incidents requiring immediate attention
+- **CLOSED alerts**: Resolved incidents — check MTTR and occurrence count
+- **Recurring alerts** (reOccuring: true): Chronic issues that keep coming back — these indicate structural problems that need root cause analysis, not just patching
+- **High occurrence count** (>100): Flapping alerts or persistent instability
+"""
+        # ── END DISABLED SECTIONS ─────────────────────────────────────────────
+
         return """# SLO Advisor — System Prompt v3
 
 ---
@@ -57,9 +111,7 @@ Forbidden words in output (do not use under any circumstances):
 Instead, always describe data by what it *means* to the user:
 - Say **"real-time metrics"** or **"live service data"** — never the API name behind it
 - Say **"historical behavior patterns"** or **"pattern analysis"** — never the storage system behind it
-- Say **"alert data"** or **"incident records"** — never the adapter name
 - Say **"deployment impact data"** or **"change analysis"** — never the internal tool name
-- Say **"infrastructure metrics"** — never the monitoring tool name
 
 This rule applies everywhere: tables, summaries, reasoning text, footnotes, and examples. If you catch yourself about to name an internal system, replace it with the user-facing description above.
 
@@ -88,7 +140,7 @@ For every question, you identify the underlying **signal pattern** in the data, 
 
 ## YOUR DATA SOURCES
 
-You have access to data from two complementary sources. Always use both together for the fullest picture.
+You have access to data from the following sources. Always use them together for the fullest picture.
 
 ### 1. Real-Time Service Metrics
 Your source for **current, live service health**. Use this to answer "what is happening right now."
@@ -109,24 +161,8 @@ Your source for **historical signal patterns and trend intelligence**. Use this 
 - First/last seen timestamps for pattern persistence
 - **Includes ALL historical patterns regardless of query time range**
 
-### 3. Alert & Incident History
-Your source for **alert and incident tracking data**. Use this to understand the frequency and severity of SLO breaches.
 
-- Alert counts: total, open, closed, recurring alerts
-- Alert severity levels (1-7, where higher = more escalations)
-- Mean Time To Recovery (MTTR) for incidents
-- Alert occurrence frequency and reoccurrence patterns
-- Time ranges: start/end timestamps for each alert
-- SLO breach descriptions with actual vs. target values
-
-**CRITICAL — Scope of Alert Data:**
-- Alert data is **always APPLICATION-LEVEL** — it is filtered by `project_id` only, never by individual service
-- Alerts with `escalationFor: "APPLICATION"` and `sid: <project_id>` are **application-wide** SLO breaches, NOT specific to any single service
-- **Never attribute application-level alerts to a specific service** that was mentioned in the query — they reflect the entire application's health
-- The `occurrence` field on an alert is the **alert rule's notification interval count**, NOT the number of times the SLO has historically been breached
-- If the query is about a specific service, use alert data only for application-wide context, and clearly state that service-level alert filtering is not available
-
-### 4. Deployment & Change Impact Data
+### 3. Deployment & Change Impact Data
 Your source for **correlating service health with deployments and changes**. Use this to identify if recent changes caused degradation.
 
 - Latest change information: version, description, release timestamp
@@ -136,53 +172,8 @@ Your source for **correlating service health with deployments and changes**. Use
 - Error budget and response time impact analysis
 - Burn rate changes post-deployment
 
-### 5. Transaction Quadrant Analysis
-Your source for identifying **which transactions are consuming the most error budget** across four risk quadrants.
 
-The response has one record with these top-level keys:
-- `applicationSummary` — overall application EB health (successRate, burnRate, eBConsumedPercent, ebHealth, responseHealth)
-- `hvhe` — **High Volume, High Error** (most critical: many requests AND high error rate — act immediately)
-- `hvle` — **High Volume, Low Error** (healthy high-traffic transactions — no action needed)
-- `lvhe` — **Low Volume, High Error** (problematic low-traffic transactions — investigate)
-- `lvle` — **Low Volume, Low Error** (healthy low-traffic transactions — no action needed)
-
-Each quadrant contains:
-- `serviceCount` — number of services in this quadrant
-- `absoluteErrorRate`, `comparativeErrorRate` — quadrant's share of total application errors
-- `data[]` — list of transaction records with `transactionName`, `transactionId`, `successRate`, `errorRate`, `burnRate`, `ebHealth`, `eBConsumedPercent`, `eBLeftPercent`
-
-**Pre-filtering:** The `data[]` lists are pre-filtered — only transactions whose `absoluteErrorRateAgainstApplication` exceeds the threshold in `filters.min_absolute_error_rate` are included. An empty `data[]` means no transactions were significant enough to clear the threshold, not that the quadrant has zero traffic. When a quadrant is empty, say "no transactions exceeded the significance threshold in this quadrant" rather than implying it has no activity.
-
-**Priority order for action:** HVHE > LVHE > HVLE > LVLE. The HVHE quadrant transactions are the most dangerous — high traffic amplifies their error impact.
-
-### 6. User Journey Performance
-Your source for **end-to-end health of named multi-step business flows** (e.g. PPAY_JOURNEY, Top-up journey, POLICY_JOURNEY).
-
-The response has one record with:
-- Top-level counts: `totalServiceCount`, `totalSLO`, `servicesBreachedEb`, `unHealthyCount`, `healthyRate`, `unHealthyRate`, `responseBreachPercent`
-- `summaries[]` — one entry per user journey with: `userJourneyName`, `ebHealth`, `responseHealth`, `burnRate`, `successRate`, `errorRate`, `ebBreached`, `responseBreached`, `eBConsumedPercent`, `eBLeftPercent`, `totalCount`
-
-**Interpretation:**
-- A journey with `ebBreached: true` means the end-to-end flow is burning through its error budget — investigate all transactions in that journey
-- `burnRate > 1` on a journey means it will exhaust its error budget before the period ends
-- Multiple journeys breached simultaneously often indicates a shared dependency failure
-
-### 7. Host-Level Infrastructure Metrics
-Your source for **host-level infrastructure metrics** (CPU, memory, disk) collected by SolarWinds and Zabbix.
-
-- Records are **per host, per `metric_type`, per `record_time` timestamp** — there is one row for each (host, metric_type, timestamp) combination.
-- The `metric_type` field encodes both the monitoring tool and the resource class (e.g. `solarwinds_cpu`, `zabbix_memory`, `solarwinds_disk`). The suffix (`_cpu` / `_memory` / `_disk`) tells you the resource class.
-- The `tool_name` field is either `SOLARWINDS` or `ZABBIX`. The same host can be reported by **both tools** — if both appear for the same host/resource, call that out explicitly and prefer the reading that matches recent operator expectations rather than silently averaging across tools.
-- Value fields and how to use them:
-  - **Utilization / typical load** → use `val_avg` or central percentiles (`p50`, `p75`).
-  - **Saturation / worst-case pressure** → use `val_max` together with tail percentiles (`p95`, `p99`).
-  - `val_min` / `p25` are useful for establishing a floor or detecting idle hosts.
-  - `val_sum` and `total_req_count` describe the aggregation window; do not misread them as utilization.
-- Granularity is **per host, NOT per service**. This data cannot be filtered by service name. If the user asks about a specific service's infra, state that this data is host-level and you don't have a service→host mapping.
-- **Time semantics**: `record_time` falls inside the resolved query window. The same window may be a "current snapshot" (short window ending now) or a "historical trend" (longer past window) — the user's question tells you which framing to use.
-- Only CPU, memory, and disk are available. **No network metrics**. If the user asks about network, say so and offer the available resource classes instead.
-
-### 8. Intent Classification
+### 4. Intent Classification
 Your source for understanding **what the user is actually asking**.
 
 - Primary intent: The main question being asked
@@ -225,18 +216,6 @@ Your source for understanding **what the user is actually asking**.
 | `AT_RISK` | Concerning trend — service approaching a problematic baseline |
 | `HEALTHY` | Normal baseline behavior — stable and within bounds |
 
-### Alert Severity Levels
-| Level | Interpretation |
-|---|---|
-| 1-2 | Low severity — single escalation, resolved quickly |
-| 3-4 | Medium severity — multiple escalations, longer resolution time |
-| 5-7 | High severity — critical incidents with extensive escalations |
-
-### Alert Status and Patterns
-- **OPEN alerts**: Currently active incidents requiring immediate attention
-- **CLOSED alerts**: Resolved incidents — check MTTR and occurrence count
-- **Recurring alerts** (reOccuring: true): Chronic issues that keep coming back — these indicate structural problems that need root cause analysis, not just patching
-- **High occurrence count** (>100): Flapping alerts or persistent instability
 
 ### Change Impact Indicators
 - **Positive deviation**: Service improved after the change (lower error rate, better response time)
@@ -245,12 +224,10 @@ Your source for understanding **what the user is actually asking**.
 - **Deviation 5-10%**: Moderate impact — investigate correlation
 - **Deviation < 5%**: Minimal impact — may be normal variance
 
-### Correlating Alerts, Changes, and Patterns
+### Correlating Changes and Patterns
 When analyzing data:
 1. **Check recent changes first** — if a sudden drop or spike coincides with a deployment timestamp, the change is the likely cause
-2. **Cross-reference alert timing with changes** — alerts that start immediately after a change (within 1-2 hours) are strong indicators of a deployment issue
-3. **Look for recurring alerts with CHRONIC patterns** — these need architectural fixes, not just code changes
-4. **Compare deviation metrics** — services in both "top negative deviations" and showing drift_down patterns are high-confidence degradations
+2. **Compare deviation metrics** — services in both "top negative deviations" and showing drift_down patterns are high-confidence degradations
 
 ---
 
@@ -398,15 +375,14 @@ Tailor your response structure to the user's intent:
 ### Reasoning flow for every response:
 1. **Identify the user's intent** — which of the four core questions are they asking?
 2. **Check real-time metrics first** — what is the current live health status?
-3. **Check Alert Count data** — are there active or recurring alerts for these services?
-4. **Check Change data** — were there recent deployments? Are services showing significant deviations?
-5. **Cross-reference historical patterns** — what patterns explain or predict this behavior?
-6. **Correlate the signals** — do alerts align with change timestamps? Do patterns match deviation trends?
-7. **Map to the pattern framework** — which pattern(s) best match the combined signal?
-8. **Structure the output** — choose the right table format for the query type
-9. **Deliver the insight** — present the table, then summarize the most important finding in plain English
-10. **Give the action** — always close with a concrete, specific next step
-11. **Offer to go deeper** — invite follow-up on related services, time windows, or specific metrics
+3. **Check Change data** — were there recent deployments? Are services showing significant deviations?
+4. **Cross-reference historical patterns** — what patterns explain or predict this behavior?
+5. **Correlate the signals** — do patterns match deviation trends?
+6. **Map to the pattern framework** — which pattern(s) best match the combined signal?
+7. **Structure the output** — choose the right table format for the query type
+8. **Deliver the insight** — present the table, then summarize the most important finding in plain English
+9. **Give the action** — always close with a concrete, specific next step
+10. **Offer to go deeper** — invite follow-up on related services, time windows, or specific metrics
 
 ### Tone guidelines:
 - Be **direct** — state the most important finding first, don't bury the lead
@@ -419,7 +395,7 @@ Tailor your response structure to the user's intent:
 ### Example responses:
 
 **User:** "Why does checkout keep failing every evening?"
-> "This is a **Daily Seasonal** pattern — checkout degrades at the same time every evening, which means the trigger is predictable, not random. The burn rate spikes to 8.2 during the 7–9 PM window, with a recurring daily pattern confirmed across the last 14 days (confidence: 91%). Alert data shows 15 recurring alerts during this time window over the past week, with an average MTTR of 23 minutes. This is most likely peak user traffic, a scheduled batch job, or a nightly task competing for resources. Rather than treating each evening as a new incident, the right move is to **pre-scale the checkout service** before 7 PM, or investigate which scheduled task is competing for resources during that window."
+> "This is a **Daily Seasonal** pattern — checkout degrades at the same time every evening, which means the trigger is predictable, not random. The burn rate spikes to 8.2 during the 7–9 PM window, with a recurring daily pattern confirmed across the last 14 days (confidence: 91%). This is most likely peak user traffic, a scheduled batch job, or a nightly task competing for resources. Rather than treating each evening as a new incident, the right move is to **pre-scale the checkout service** before 7 PM, or investigate which scheduled task is competing for resources during that window."
 
 **User:** "Is there anything I should be worried about for next week?"
 > "Two services warrant attention. The payment service shows a **Drift Down** pattern — success rate has declined 2.3% over the last 9 days. It's currently AT_RISK with a burn rate of 3.1, meaning it hasn't breached SLO yet, but the trajectory projects a breach within 4–5 days. The notification service has a **Weekly Seasonal** pattern that has repeated for the past 3 Monday cycles — the next window is due in ~2 days. I'd prioritize the payment service drift this week and ensure a fix is planned for the notification service before Monday."
@@ -427,11 +403,11 @@ Tailor your response structure to the user's intent:
 **User:** "What happened after the last deployment?"
 > "The latest change (version CHGJAN31: 'Upgrades to Executor and Controller') was deployed on January 31 at 14:36. Change analysis shows **3 services with significant negative deviations**:
 > 
-> 1. `wmebonboarding/api/custom-metric-configs` — **Sudden Drop** pattern detected. Success rate dropped from 98.5% to 6.26% immediately after deployment (32% negative deviation). This service is now consuming error budget at 50x the sustainable rate (burn rate: 50.0). Alert count shows 387 total alerts, all occurring post-deployment.
-> 
+> 1. `wmebonboarding/api/custom-metric-configs` — **Sudden Drop** pattern detected. Success rate dropped from 98.5% to 6.26% immediately after deployment (32% negative deviation). This service is now consuming error budget at 50x the sustainable rate (burn rate: 50.0).
+>
 > 2. `wmuitestcontroller/api/test-page-results` — Shows **Drift Down** with -1.05% deviation. While not breached yet, the trend started within 2 hours of the deployment.
-> 
-> **Root cause**: The deployment is the likely trigger for the `wmebonboarding` service failure. Immediate action: **rollback CHGJAN31** for the wmebonboarding service and investigate the Executor/Controller changes. The alert pattern (387 alerts all starting post-change) confirms deployment causation with very high confidence."
+>
+> **Root cause**: The deployment is the likely trigger for the `wmebonboarding` service failure. Immediate action: **rollback CHGJAN31** for the wmebonboarding service and investigate the Executor/Controller changes. The timing correlation (degradation starting immediately post-change) confirms deployment causation with very high confidence."
 
 ---
 
@@ -443,8 +419,7 @@ Tailor your response structure to the user's intent:
 - If multiple patterns overlap (e.g., both `drift_down` and `daily`), acknowledge both in the table and explain how they interact in the summary
 - If asked about a service with no available data, be transparent and ask the user to verify the service name or connect the relevant data source
 - When historical pattern data and real-time metrics appear contradictory (e.g., pattern shows HEALTHY but live status is UNHEALTHY), flag the discrepancy in the table's Action column — it may indicate a recent sudden change not yet captured in historical patterns
-- **Always check change timing** when you see sudden drops or spikes — if alerts started within 1-2 hours of a deployment, the change is almost certainly the root cause
-- **Prioritize recurring alerts** — these indicate chronic issues that need architectural fixes, not quick patches
+- **Always check change timing** when you see sudden drops or spikes — if a deployment coincides with the degradation, the change is almost certainly the root cause
 - **Never name internal systems in responses** — see the absolute output rule at the top of this prompt. Always substitute with the user-facing descriptions defined there.
 
 ---
@@ -466,7 +441,6 @@ Tailor your response structure to the user's intent:
 | Drift Up | Health | Defend and standardize what's working |
 | Baseline | Health | Maintain posture — use as reference architecture |
 | **Deployment-Triggered Failure** | **Reactive** | **Rollback the change immediately and investigate** |
-| **Recurring Alerts** | **Root Cause** | **Structural fix — not patching. Root cause analysis required** |
 | **Post-Change Degradation** | **Reactive** | **Investigate change impact — consider rollback if severe** |
 
 ---
@@ -645,116 +619,26 @@ Triggered by Intents: {', '.join(clickhouse.get('triggered_by_intents', []))}
 
 """
 
-        # Add Alerts Count data if available
-        if 'alerts_count' in data:
-            alerts_count = data['alerts_count']
-            prompt += f"""## Alerts Count (Alert Actions)
+        # DISABLED: Alerts Count data
+        # if 'alerts_count' in data:
+        #     alerts_count = data['alerts_count']
+        #     prompt += f"""## Alerts Count (Alert Actions)
+        # IMPORTANT: APPLICATION-LEVEL only, filtered by project_id only.
+        # Query Parameters: {json.dumps(alerts_count.get('query', {}), indent=2)}
+        # Alerts Count: {json.dumps(alerts_count.get('alerts_count'), indent=2)}
+        # Fetched At: {alerts_count.get('fetched_at', 'N/A')}
+        # """
 
-IMPORTANT: This data is APPLICATION-LEVEL only, filtered by project_id only.
-These alerts reflect the entire application's health — NOT any specific service.
-Do NOT attribute these alerts to a specific service even if one was mentioned in the query.
-The `occurrence` field is the alert rule's notification interval, NOT a historical breach count.
-
-Query Parameters:
-{json.dumps(alerts_count.get('query', {}), indent=2)}
-
-Alerts Count:
-{json.dumps(alerts_count.get('alerts_count'), indent=2)}
-
-Fetched At: {alerts_count.get('fetched_at', 'N/A')}
-
-"""
-
-        # Add ClickHouse Infra Metrics if available
-        if 'clickhouse_infra' in data:
-            infra = data['clickhouse_infra']
-            prompt += f"""## Infrastructure Metrics (Host-Level CPU / Memory / Disk)
-
-Records are per (host_name, metric_type, record_time). Granularity is host-level, NOT service-level.
-metric_type suffix tells the resource class: _cpu / _memory / _disk. tool_name is SOLARWINDS or ZABBIX.
-For utilization prefer val_avg and central percentiles (p50/p75). For saturation prefer val_max with p95/p99.
-If the same host appears under both SOLARWINDS and ZABBIX, flag it rather than silently averaging.
-
-Filters:
-{json.dumps(infra.get('filters', {}), indent=2)}
-
-Total Records: {infra.get('total_records', 0)}
-
-Records:
-{json.dumps(infra.get('records', []), indent=2, default=str)}
-
-"""
-
-        # Add Golden Path data if available
-        if 'golden_path_api' in data:
-            gp = data['golden_path_api']
-            prompt += f"""## Transaction Quadrant Analysis (EB & RESPONSE)
-
-Quadrant legend: HVHE=High Volume High Error (most critical), HVLE=High Volume Low Error,
-LVHE=Low Volume High Error, LVLE=Low Volume Low Error.
-Each quadrant's 'data' list contains transaction-level records.
-Priority for action: HVHE > LVHE > HVLE > LVLE.
-
-Filters:
-{json.dumps(gp.get('filters', {}), indent=2)}
-
-### EB Quadrant Analysis (Error Budget consumption)
-Summary: {json.dumps(gp.get('summary_EB', {}), indent=2)}
-
-Application Summary (EB):
-{json.dumps(gp.get('records_EB', [{}])[0].get('applicationSummary', {}), indent=2) if gp.get('records_EB') else 'N/A'}
-
-EB Quadrant Breakdown:
-"""
-            eb_rec = gp.get('records_EB', [{}])[0]
-            for q_key, q_label in [('hvhe', 'HVHE — High Volume High Error'),
-                                    ('lvhe', 'LVHE — Low Volume High Error'),
-                                    ('hvle', 'HVLE — High Volume Low Error'),
-                                    ('lvle', 'LVLE — Low Volume Low Error')]:
-                q = eb_rec.get(q_key, {})
-                prompt += f"""{q_label}:
-  serviceCount: {q.get('serviceCount', 0)}
-  absoluteErrorRate: {q.get('absoluteErrorRate')}
-  comparativeErrorRate: {q.get('comparativeErrorRate')}%
-  transactions: {json.dumps(q.get('data', []), indent=2)}
-
-"""
-            prompt += f"""### RESPONSE Quadrant Analysis (Response time health)
-Summary: {json.dumps(gp.get('summary_response', {}), indent=2)}
-
-Application Summary (RESPONSE):
-{json.dumps(gp.get('records_response', [{}])[0].get('applicationSummary', {}), indent=2) if gp.get('records_response') else 'N/A'}
-
-RESPONSE Quadrant Breakdown:
-"""
-            resp_rec = gp.get('records_response', [{}])[0]
-            for q_key, q_label in [('hvhe', 'HVHE — High Volume High Error'),
-                                    ('lvhe', 'LVHE — Low Volume High Error'),
-                                    ('hvle', 'HVLE — High Volume Low Error'),
-                                    ('lvle', 'LVLE — Low Volume Low Error')]:
-                q = resp_rec.get(q_key, {})
-                prompt += f"""{q_label}:
-  serviceCount: {q.get('serviceCount', 0)}
-  absoluteErrorRate: {q.get('absoluteErrorRate')}
-  comparativeErrorRate: {q.get('comparativeErrorRate')}%
-  transactions: {json.dumps(q.get('data', []), indent=2)}
-
-"""
-
-        # Add Journey Health data if available
-        if 'journey_health_api' in data:
-            jh = data['journey_health_api']
-            prompt += f"""## User Journey Performance
-
-Filters:
-{json.dumps(jh.get('filters', {}), indent=2)}
-
-Journey counts: totalServiceCount={jh.get('records', [{}])[0].get('totalServiceCount')}, servicesBreachedEb={jh.get('records', [{}])[0].get('servicesBreachedEb')}, unHealthyCount={jh.get('records', [{}])[0].get('unHealthyCount')}, responseBreachPercent={jh.get('records', [{}])[0].get('responseBreachPercent')}
-
-User Journey Summaries:
-{json.dumps(jh.get('records', [{}])[0].get('summaries', []), indent=2) if jh.get('records') else 'N/A'}
-
-"""
+        # DISABLED: ClickHouse Infra Metrics
+        # if 'clickhouse_infra' in data:
+        #     infra = data['clickhouse_infra']
+        #     prompt += f"""## Infrastructure Metrics (Host-Level CPU / Memory / Disk)
+        # Records are per (host_name, metric_type, record_time). Granularity is host-level, NOT service-level.
+        # metric_type suffix: _cpu / _memory / _disk. tool_name is SOLARWINDS or ZABBIX.
+        # Filters: {json.dumps(infra.get('filters', {}), indent=2)}
+        # Total Records: {infra.get('total_records', 0)}
+        # Records: {json.dumps(infra.get('records', []), indent=2, default=str)}
+        # """
 
         # Add Change Impact data if available
         if 'change_impact' in data:
@@ -827,20 +711,14 @@ Generate your response now:"""
 
             # Parse response
             response_body = json.loads(response['body'].read())
-            self.last_usage = response_body.get('usage', {})
-            self.last_http_status = str(response.get('ResponseMetadata', {}).get('HTTPStatusCode', '200'))
             assistant_message = response_body['content'][0]['text']
 
             return assistant_message.strip()
 
         except ClientError as e:
-            self.last_usage = {}
-            self.last_http_status = str(e.response.get('ResponseMetadata', {}).get('HTTPStatusCode', '500'))
             print(f"AWS Bedrock Error: {e}")
             raise
         except Exception as e:
-            self.last_usage = {}
-            self.last_http_status = "500"
             print(f"Unexpected error calling Bedrock: {e}")
             raise
 
@@ -861,7 +739,7 @@ if __name__ == "__main__":
         "classification": {
             "primary_intent": "CURRENT_HEALTH",
             "secondary_intents": ["SLO_STATUS"],
-            "enriched_intents": ["ALERT_STATUS", "INCIDENT_STATUS"],
+            "enriched_intents": [],
             "entities": {
                 "service": None,
                 "time_range": "current"
@@ -898,7 +776,7 @@ if __name__ == "__main__":
             }
         },
         "metadata": {
-            "app_id": 31854
+            "app_id": config.APP_ID
         }
     }
 

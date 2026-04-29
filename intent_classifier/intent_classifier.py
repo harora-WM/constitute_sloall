@@ -5,13 +5,16 @@ Uses AWS Bedrock Claude Sonnet 4.6 to classify user queries into intents and det
 """
 
 import os
+import sys
 import json
 import yaml
 from typing import Dict, List, Set, Any
-from dotenv import load_dotenv
 import boto3
 from botocore.exceptions import ClientError
 from timestamp import TimestampResolver
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import config
 
 
 class IntentClassifier:
@@ -19,9 +22,6 @@ class IntentClassifier:
 
     def __init__(self):
         """Initialize the intent classifier"""
-        # Load environment variables
-        load_dotenv()
-
         # Load YAML configurations
         self.intent_categories = self._load_yaml('intent_categories.yaml')
         self.enrichment_rules = self._load_yaml('enrichment_rules.yaml')
@@ -36,22 +36,19 @@ class IntentClassifier:
         # Initialize AWS Bedrock client
         self.bedrock_runtime = boto3.client(
             service_name='bedrock-runtime',
-            region_name=os.getenv('AWS_REGION', 'us-east-1'),
-            aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
-            aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY')
+            region_name=config.AWS_REGION,
+            aws_access_key_id=config.AWS_ACCESS_KEY_ID,
+            aws_secret_access_key=config.AWS_SECRET_ACCESS_KEY
         )
 
         # Model configuration
-        self.model_id = os.getenv('BEDROCK_MODEL_ID', 'global.anthropic.claude-sonnet-4-6')
-        self.max_tokens = int(os.getenv('MAX_TOKENS', '500'))
-        self.temperature = float(os.getenv('TEMPERATURE', '0.0'))
+        self.model_id = config.BEDROCK_MODEL_ID
+        self.max_tokens = config.MAX_TOKENS
+        self.temperature = config.TEMPERATURE
 
         # Build system prompt
         self.system_prompt = self._build_system_prompt()
 
-        # Populated after each _call_bedrock() for token tracking
-        self.last_usage: Dict[str, int] = {}
-        self.last_http_status: str = "200"
 
     def _load_yaml(self, filename: str) -> Dict:
         """Load YAML file"""
@@ -160,8 +157,6 @@ Return ONLY the JSON object. No additional text.
 
             # Parse the response
             response_body = json.loads(response['body'].read())
-            self.last_usage = response_body.get('usage', {})
-            self.last_http_status = str(response.get('ResponseMetadata', {}).get('HTTPStatusCode', '200'))
             assistant_message = response_body['content'][0]['text']
 
             # Extract JSON object from response
@@ -181,19 +176,13 @@ Return ONLY the JSON object. No additional text.
                 return json.loads(assistant_message)
 
         except ClientError as e:
-            self.last_usage = {}
-            self.last_http_status = str(e.response.get('ResponseMetadata', {}).get('HTTPStatusCode', '500'))
             print(f"AWS Bedrock Error: {e}")
             return {}
         except json.JSONDecodeError as e:
-            self.last_usage = {}
-            self.last_http_status = "200"
             print(f"JSON Parsing Error: {e}")
             print(f"LLM Response: {assistant_message}")
             return {}
         except Exception as e:
-            self.last_usage = {}
-            self.last_http_status = "500"
             print(f"Unexpected error: {e}")
             return {}
 

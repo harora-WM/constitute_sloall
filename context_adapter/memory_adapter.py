@@ -310,15 +310,15 @@ def fetch_patterns_by_intent(
 if __name__ == "__main__":
     # Example usage
     # Time range: Last 30 days from now
-    from datetime import datetime, timedelta
+    from datetime import datetime, timedelta, timezone
 
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
     end_time = int(now.timestamp() * 1000)
     start_time = int((now - timedelta(days=30)).timestamp() * 1000)
 
     # Example parameters
-    APP_ID = 31854      # WMPlatform
-    PROJECT_ID = 215853
+    APP_ID = config.APP_ID
+    PROJECT_ID = config.PROJECT_ID
     SID = None  # None = fetch all services, or specify like "payment-api"
 
     print("Fetching AI Service Behavior Memory")

@@ -4,19 +4,23 @@ Service Mapping Fetcher
 Fetches all distinct services for an application from ClickHouse and creates a service mapping YAML file
 """
 
+import os
+import sys
 import requests
 import json
 import yaml
 from typing import Dict, List, Any
 from collections import defaultdict
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import config
 
 # ClickHouse Configuration
-CLICKHOUSE_URL = "http://ec2-47-129-241-41.ap-southeast-1.compute.amazonaws.com:8123"
-CLICKHOUSE_USER = "wm_test"
-CLICKHOUSE_PASSWORD = "Watermelon@123"
-CLICKHOUSE_DB = "metrics"
-CLICKHOUSE_TABLE = "ai_service_features_hourly"
+CLICKHOUSE_URL = config.CLICKHOUSE_URL
+CLICKHOUSE_USER = config.CLICKHOUSE_USERNAME
+CLICKHOUSE_PASSWORD = config.CLICKHOUSE_PASSWORD
+CLICKHOUSE_DB = config.CLICKHOUSE_DATABASE
+CLICKHOUSE_TABLE = config.CLICKHOUSE_SERVICES_TABLE
 
 
 def fetch_distinct_services(application_id: int) -> List[Dict[str, Any]]:
@@ -202,8 +206,8 @@ def main():
     parser.add_argument(
         '--app-id',
         type=int,
-        default=31854,
-        help='Application ID to fetch services for (default: 31854)'
+        default=config.APP_ID,
+        help=f'Application ID to fetch services for (default: {config.APP_ID})'
     )
     parser.add_argument(
         '--output',

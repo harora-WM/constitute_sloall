@@ -15,12 +15,16 @@ Index granularity rule:
 """
 
 import os
+import sys
 import re
 import json
 import logging
 import boto3
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, Optional
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import config
 
 logger = logging.getLogger(__name__)
 
@@ -377,7 +381,7 @@ def _parse_with_llm(query: str) -> Optional[tuple[datetime, datetime]]:
     Uses the same boto3 client pattern as intent_classifier.py.
     Returns None if credentials are missing or the call fails.
     """
-    if not os.getenv("AWS_ACCESS_KEY_ID"):
+    if not config.AWS_ACCESS_KEY_ID:
         logger.debug("AWS credentials not set — skipping LLM fallback")
         return None
 
@@ -405,9 +409,9 @@ def _parse_with_llm(query: str) -> Optional[tuple[datetime, datetime]]:
     try:
         client = boto3.client(
             service_name="bedrock-runtime",
-            region_name=os.getenv("AWS_REGION", "us-east-1"),
-            aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
-            aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+            region_name=config.AWS_REGION,
+            aws_access_key_id=config.AWS_ACCESS_KEY_ID,
+            aws_secret_access_key=config.AWS_SECRET_ACCESS_KEY,
         )
         request_body = {
             "anthropic_version": "bedrock-2023-05-31",
@@ -417,7 +421,7 @@ def _parse_with_llm(query: str) -> Optional[tuple[datetime, datetime]]:
             "messages": [{"role": "user", "content": user_msg}],
         }
         response      = client.invoke_model(
-            modelId=os.getenv("BEDROCK_MODEL_ID", "global.anthropic.claude-sonnet-4-6"),
+            modelId=config.BEDROCK_MODEL_ID,
             body=json.dumps(request_body),
         )
         raw = json.loads(response["body"].read())["content"][0]["text"].strip()
