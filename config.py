@@ -64,8 +64,8 @@ JOURNEY_HEALTH_API_URL = os.getenv(
 )
 
 # ── Credentials ────────────────────────────────────────────────────────────────
-USERNAME = os.getenv("USERNAME", "wmadmin")
-PASSWORD = os.getenv("PASSWORD")
+USERNAME = os.getenv("WM_USERNAME", "wmadmin")
+PASSWORD = os.getenv("WM_PASSWORD")
 
 # ── Application defaults ───────────────────────────────────────────────────────
 APP_ID = int(os.getenv("APP_ID", "31854"))

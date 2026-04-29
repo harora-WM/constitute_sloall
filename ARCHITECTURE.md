@@ -162,14 +162,9 @@ A fully conversational SLO analysis system that uses AWS Bedrock Claude Sonnet 4
 **Role:** Fetch real-time SLO metrics
 - **Source:** Watermelon API via Keycloak auth
 - **Intent-based routing with 3 functions:**
-  - `get_current_health()` - Returns ALL 4 arrays (EB + RESPONSE)
-  - `get_service_health()` - Filtered to specific service
-  - `get_error_budget_status()` - EB category only
-
 **Key Changes Made:**
-- ✅ Primary intent checked FIRST
-- ✅ CURRENT_HEALTH no longer hijacked by ERROR_BUDGET_STATUS
-- ✅ Fallback to priority order for secondary intents
+- ✅ Always calls `fetch_api_data` + `transform_to_llm_format` — returns all 4 arrays for all services
+- ✅ Service filtering and EB-only views handled by Layer 2 LLM
 
 ### 5. Memory Adapter (`context_adapter/memory_adapter.py`)
 **Role:** Fetch historical behavior patterns
@@ -227,18 +222,13 @@ A fully conversational SLO analysis system that uses AWS Bedrock Claude Sonnet 4
 
 **Why:** Separation of concerns - intent understanding vs. data analysis
 
-### 2. **Primary Intent Precedence**
+### 2. **Single Fetch Path**
 ```python
-# Check primary intent FIRST
-if primary_intent == "CURRENT_HEALTH":
-    return get_current_health(...)  # All 4 arrays
-
-# Then check secondary/enriched intents
-elif "ERROR_BUDGET_STATUS" in intents:
-    return get_error_budget_status(...)  # 3 EB arrays
+raw_data = fetch_api_data(...)
+return transform_to_llm_format(raw_data, start_time_ms, end_time_ms)
 ```
 
-**Why:** Respect user's main question over LLM's secondary classifications
+**Why:** All intents get the same full dataset; Layer 2 LLM focuses the answer based on the query
 
 ### 3. **No Filtering in Memory Adapter**
 ```python
@@ -318,7 +308,7 @@ quit      # Exit
 
 **Step 1 - Intent Classification:**
 - Primary: `CURRENT_HEALTH`
-- Secondary: `SLO_STATUS`, `ERROR_BUDGET_STATUS` (from LLM)
+- Secondary: `SLO_STATUS` (from LLM)
 - Enriched: `ALERT_STATUS`, `INCIDENT_STATUS` (from rules)
 - Time: `current` → last 1 hour
 - Data sources: `java_stats_api`, `clickhouse`
@@ -397,7 +387,7 @@ Focus on the top 3 services with burn rates >10...
 
 The system is working correctly when:
 
-✅ **Intent Classification:** Correctly identifies CURRENT_HEALTH, SERVICE_HEALTH, ERROR_BUDGET_STATUS
+✅ **Intent Classification:** Correctly identifies CURRENT_HEALTH, SERVICE_HEALTH, and other intents
 ✅ **Primary Intent Respected:** CURRENT_HEALTH returns all 4 arrays, not just EB
 ✅ **Memory Adapter:** Returns all 76 patterns regardless of time query
 ✅ **Service Matching:** Fuzzy matches service names to IDs

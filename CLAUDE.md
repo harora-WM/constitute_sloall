@@ -22,6 +22,9 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --workers 1
 # Streamlit UI — requires FastAPI backend to be running first
 streamlit run app.py
 
+# Token usage dashboard — standalone, does NOT require FastAPI
+streamlit run token_usage.py
+
 # Generate services.yaml from ClickHouse (run when services change)
 python fetch_services.py
 
@@ -73,8 +76,8 @@ User Query
       clickhouse_infra  -- if 'clickhouse_infra' in data_sources (host-level infra metrics)
       golden_path_api   -- if 'golden_path_api' in data_sources (GOLDEN_PATH_IMPACT intent)
       journey_health_api -- if 'journey_health_api' in data_sources (USER_JOURNEY_IMPACT intent)
-      alerts_count      -- ALWAYS fetched (regardless of intent)
-      change_impact     -- ALWAYS fetched (regardless of intent)
+      alerts_count      -- if 'alerts_count' in data_sources
+      change_impact     -- if 'change_impact' in data_sources
   -> Step 4: Conversational Response (LLM Call #2, llm_response_generator.py)
       Input: full orchestrator output
       Output: natural language answer
@@ -85,30 +88,29 @@ User Query
 
 **`config.py`** — Single source of truth for all configuration. Loads `.env` using its own `__file__` path (works from any working directory). All adapters in `context_adapter/` and `main.py` import this instead of calling `os.getenv()` directly. **Exception:** `intent_classifier/intent_classifier.py` reads env vars via `os.getenv()` directly and calls its own `load_dotenv()` without a path — it does NOT import `config.py`.
 
-**`main.py`** — Contains `SLOOrchestrator` class, `main()` interactive CLI, and the FastAPI `app` instance. `app_id` and `project_id` come from `config.APP_ID` / `config.PROJECT_ID` for CLI; for API they come from the request body (defaulting to the same config values if not supplied).
+**`main.py`** — Contains `SLOOrchestrator` class, `main()` interactive CLI, and the FastAPI `app` instance. `app_id` and `project_id` come from `config.APP_ID` / `config.PROJECT_ID` for CLI; for API they come from the request body (defaulting to the same config values if not supplied). Creates a `TokenTracker` instance at the start of every `process_query()` call and logs two rows to `metrics.llm_token_usage` — one after intent classification, one after response generation. The `timestamp.py` LLM fallback call is intentionally not tracked (it's conditional and cheap).
 
 **`intent_classifier/intent_classifier.py`** — Layer 1 LLM (AWS Bedrock). Outputs primary/secondary/enriched intents, entities (`service` only — no `time_range`/`comparison_range`), data_sources list, and UTC millisecond timestamps. Timestamp resolution calls `timestamp.py` with the raw user query string. Config files: `intent_categories.yaml` (10 categories including `INFRA`, 50+ intents), `enrichment_rules.yaml` (maps primary intents → additional enriched intents to auto-add), `data_sources.yaml`.
 
 Key enrichment chains that indirectly trigger data sources:
-- `ROOT_CAUSE_SINGLE` / `ROOT_CAUSE_MULTI` → enriches `INFRA_METRICS` → triggers `clickhouse_infra`
-- `ALERT_DEBUG` → enriches `ROOT_CAUSE_SINGLE` → enriches `INFRA_METRICS` → triggers `clickhouse_infra` (two-hop)
+- `ROOT_CAUSE_SINGLE` / `ROOT_CAUSE_MULTI` → enriches `INFRA_METRICS` → triggers `clickhouse_infra`; also directly carries `change_impact` in their own data_sources
+- `ALERT_DEBUG` → enriches `ROOT_CAUSE_SINGLE` → enriches `INFRA_METRICS` → triggers `clickhouse_infra` (two-hop); also picks up `change_impact` via `ROOT_CAUSE_SINGLE`'s direct data_sources
 - `BLAST_RADIUS` → enriches `USER_JOURNEY_IMPACT` → triggers `journey_health_api`
 - `CAPACITY_RISK` / `PERFORMANCE_BOTTLENECK` → enriches `INFRA_METRICS` → triggers `clickhouse_infra`
 - `GOLDEN_PATH_IMPACT` → enriches `CUSTOMER_IMPACT` + `MITIGATION_STEPS`
 - `USER_JOURNEY_IMPACT` → enriches `BLAST_RADIUS` + `MITIGATION_STEPS`
+- `CURRENT_HEALTH` → enriches `ALERT_STATUS` + `INCIDENT_STATUS` → both carry `alerts_count`
+- `CHANGE_RISK` / `ROLLBACK_ADVICE` → enriches `PRE_POST_CHANGE` + `CHANGE_AUDIT` → both carry `change_impact`
 
-So a query classified as `ROOT_CAUSE_SINGLE` will silently add `clickhouse_infra` to `data_sources` via enrichment, even without explicit `INFRA_METRICS` intent from the user. Multi-hop chains (e.g. `ALERT_DEBUG → ROOT_CAUSE_SINGLE → INFRA_METRICS`) are resolved in a single pass by `intent_classifier.py` — all enrichments are flattened before returning.
+So a query classified as `ROOT_CAUSE_SINGLE` will silently add both `clickhouse_infra` (via enrichment) and `change_impact` (directly in its data_sources) without explicit user intent. Multi-hop chains (e.g. `ALERT_DEBUG → ROOT_CAUSE_SINGLE → INFRA_METRICS`) are resolved in a single pass by `intent_classifier.py` — all enrichments are flattened before returning.
 
-**`context_adapter/java_stats.py`** — Fetches real-time SLO metrics from Watermelon API via Keycloak auth. Routes by **primary intent first**, then falls back to secondary/enriched:
-- `CURRENT_HEALTH` -> `get_current_health()` -> 4 arrays (unhealthy_eb, at_risk_eb, unhealthy_response, at_risk_response)
-- `SERVICE_HEALTH` -> `get_service_health(service_id)` -> same 4 arrays for one service (returns None if no service_id)
-- `ERROR_BUDGET_STATUS` -> `get_error_budget_status()` -> 3 arrays (unhealthy_eb, at_risk_eb, healthy_eb)
+**`context_adapter/java_stats.py`** — Fetches real-time SLO metrics from Watermelon API via Keycloak auth. Always calls `fetch_api_data()` → `transform_to_llm_format()`, returning 4 arrays (unhealthy_eb, at_risk_eb, unhealthy_response, at_risk_response) for all services regardless of intent. Service filtering and EB-only views are left to the Layer 2 LLM.
 
 **`context_adapter/memory_adapter.py`** — Fetches historical behavior patterns from ClickHouse `ai_service_behavior_memory` table. When called by the orchestrator, `_fetch_memory_adapter` receives the full `intents` set and routes to `fetch_patterns_by_intent()`. If no intents are provided it falls back to `fetch_behavior_service_memory()` (backward-compat path). Currently 108 patterns for app 31854.
 
-**`context_adapter/alert_count.py`** — Fetches alert action counts from `wmerrorbudgetalertandnotificationservice` API via Keycloak auth. Always called by orchestrator for the full query time window, SLO types `["ERROR", "RESPONSE"]`. Entry point: `fetch_alerts_for_orchestrator()`.
+**`context_adapter/alert_count.py`** — Fetches alert action counts from `wmerrorbudgetalertandnotificationservice` API via Keycloak auth. Called by orchestrator when `alerts_count` appears in `data_sources`, for the full query time window, SLO types `["ERROR", "RESPONSE"]`. Entry point: `fetch_alerts_for_orchestrator()`.
 
-**`context_adapter/change_pre_post.py`** — Fetches the latest deployment change (from `wmebonboarding` release-histories API) and top-5 EB/RESPONSE deviations pre/post that release (from `wmerrorbudgetstatisticsservice`). Always called by orchestrator. Entry point: `fetch_change_impact_for_orchestrator()`.
+**`context_adapter/change_pre_post.py`** — Fetches the latest deployment change (from `wmebonboarding` release-histories API) and top-5 EB/RESPONSE deviations pre/post that release (from `wmerrorbudgetstatisticsservice`). Called by orchestrator when `change_impact` appears in `data_sources`. Entry point: `fetch_change_impact_for_orchestrator()`.
 
 **`context_adapter/golden_path_adapter.py`** — Fetches top-5 quadrant transactions for both EB and RESPONSE metrics from `wmerrorbudgetstatisticsservice`. Triggered when `golden_path_api` appears in `data_sources` (i.e. `GOLDEN_PATH_IMPACT` intent). Uses a **single Keycloak token** for both API calls. Entry point: `fetch_golden_path_for_orchestrator(app_id, project_id, start_time, end_time, username, password)`. Returns envelope with `summary_EB` and `summary_response` (each with `total_transactions` + per-quadrant counts for hvhe/hvle/lvhe/lvle), and `records_EB` / `records_response` (each a single-element list containing `applicationSummary` and 4 quadrant dicts with `data` lists). **Each quadrant's `data[]` is post-fetch filtered to only transactions where `absoluteErrorRateAgainstApplication > MIN_ABS_ERROR_RATE` (currently `0.01`); the threshold is exposed in `filters.min_absolute_error_rate`. Change the threshold by updating the module-level constant `MIN_ABS_ERROR_RATE` in `golden_path_adapter.py`.**
 
@@ -126,7 +128,11 @@ Currently sanitized by `_sanitize_response()`: `Java Stats API`, `Java Stats`, `
 
 **`utils/service_matcher.py`** — Fuzzy matching via `SequenceMatcher`. Loads `services.yaml` (125 services). Threshold: 0.3; substring matches boosted to 0.7. Returns ranked results with similarity scores.
 
+**`utils/token_tracker.py`** — Writes one row per LLM task to `metrics.llm_token_usage` in ClickHouse. `TokenTracker(app_id, project_id, username)` generates a `batch_id` (UUID) shared across all tasks in that pipeline run; `run_id` is a sequential counter (1, 2, …) auto-incremented per `log_task()` call. Fields logged: `task_id` (unique UUID), `task_name`, `project_name` (always `"Conversational_SLO"`), `model_name`, `model_provider` (always `"bedrock"`), `input_tokens`, `output_tokens`, `total_tokens`, `duration_ms`, `task_status`, `response_status`, `had_error`, `error_type`, `token_usage_missing`. All errors are swallowed with a print so a logging failure never breaks the pipeline. The `event_date` column is MATERIALIZED in ClickHouse (`toDate(started_at)`) — never insert it.
+
 **`intent_classifier/timestamp.py`** — Converts the raw user query directly to UTC millisecond timestamps using a **hybrid three-stage approach**: (1) deterministic regex/rule-based parsing, (2) Claude Sonnet LLM fallback for complex/ambiguous expressions, (3) hard fallback to last 1 hour. Determines index granularity: HOURLY (<=3 days), DAILY (>3 days). Called with the raw query string, not an LLM-extracted label.
+
+**`token_usage.py`** — Standalone Streamlit dashboard for LLM token consumption. Reads directly from `metrics.llm_token_usage` via ClickHouse HTTP API — does NOT require the FastAPI backend. Three tabs: **Overview** (4 metric cards + tokens/requests over time + token distribution by project), **Utilization Report** (HTML table of recent runs: task name + task_id, project, user, timestamps, tokens, status), **Request Log** (accordion table using native `<details>/<summary>` HTML — one expandable row per task showing Time/Status/Run ID/Task/Model/Tokens/Duration in the header; Request Details panel inside with all fields). All tabs share a time-range filter (Last 7 days / Last 30 days / Custom) rendered outside the tabs. Uses `_where(start, end)` helper that filters on both `event_date` (partition pruning) and `started_at` (exact range).
 
 **`app.py`** — Streamlit chat UI. Talks to the FastAPI backend at `http://localhost:8000`. Renders the conversational response as markdown; shows intent, resolved time range, index, and per-source stats in a collapsible "Technical details" expander. App ID, Project ID, and optional Start/End Time override (Unix ms) are configurable from the sidebar. Internal data-source keys (`java_stats_api`, `clickhouse`, etc.) are mapped to user-friendly display names via `SOURCE_DISPLAY_NAMES` dict at the top of the file. Per-source stats are rendered by `render_source_stat()` which has four branches keyed on envelope shape: `stats` (change_impact), `total_records` (clickhouse, infra), `summary_EB` (golden_path_api), and `records` list (journey_health_api — shows journey count, unhealthy count, healthy rate). **When adding a new adapter: (1) add its key → display name to `SOURCE_DISPLAY_NAMES`; (2) if its envelope shape doesn't match an existing branch, add one to `render_source_stat()` in `app.py`.**
 
@@ -134,13 +140,13 @@ Currently sanitized by `_sanitize_response()`: `Java Stats API`, `Java Stats`, `
 
 | Source | Triggered | Description |
 |--------|-----------|-------------|
-| `java_stats_api` | If in `data_sources` from intent | Real-time SLO metrics; primary intent routes to correct function |
+| `java_stats_api` | If in `data_sources` from intent | Real-time SLO metrics; always fetches all services regardless of intent — Layer 2 LLM handles filtering |
 | `clickhouse` | If in `data_sources` from intent | All historical behavior patterns; no time/intent filtering |
 | `golden_path_api` | If in `data_sources` from intent (`GOLDEN_PATH_IMPACT`) | Top-5 quadrant EB transactions; identifies revenue-critical endpoints with highest EB consumption |
 | `journey_health_api` | If in `data_sources` from intent (`USER_JOURNEY_IMPACT`) | User journey performance; end-to-end health of multi-step business flows |
 | `clickhouse_infra` | If in `data_sources` from intent (`INFRA_METRICS`) | Host-level CPU/memory/disk metrics from `metrics.infra_data`; filtered by app/project/time |
-| `alerts_count` | Always | Alert action counts for query time window |
-| `change_impact` | Always | Latest deployment + top-5 EB/RESPONSE deviations pre/post release |
+| `alerts_count` | If in `data_sources` from intent | Alert action counts for query time window |
+| `change_impact` | If in `data_sources` from intent | Latest deployment + top-5 EB/RESPONSE deviations pre/post release |
 | `postgres` | Not implemented | Planned for SLO definitions; returns `{"status": "not_implemented"}` if classifier routes to it |
 | `opensearch` | Not implemented | Planned for logs/traces; returns `{"status": "not_implemented"}` if classifier routes to it |
 
@@ -148,6 +154,7 @@ Currently sanitized by `_sanitize_response()`: `Java Stats API`, `Java Stats`, `
 - `ai_service_behavior_memory` — behavior patterns (108 records, app 31854)
 - `ai_service_features_hourly` — service inventory (source for `services.yaml`)
 - `infra_data` — host-level infra metrics (CPU / memory / disk via SolarWinds and Zabbix); queried by `infra_adapter.py`. Table name overridable via `CLICKHOUSE_INFRA_TABLE`.
+- `llm_token_usage` — one row per LLM task logged by `TokenTracker`. PARTITION BY `toYYYYMM(event_date)`, ORDER BY `(event_date, app_id, project_id, task_id, started_at)`. `event_date` is MATERIALIZED — never insert it. Two rows written per pipeline run (`SLO.intent_classification`, `SLO.response_generation`).
 
 ## Environment Variables (.env)
 
@@ -182,8 +189,8 @@ GOLDEN_PATH_RESPONSE_API_URL=https://wm-sandbox-1.watermelon.us/services/wmerror
 JOURNEY_HEALTH_API_URL=https://wm-sandbox-1.watermelon.us/services/wmerrorbudgetstatisticsservice/api/user-journeys/performance
 
 # Credentials (shared across all Keycloak-authenticated adapters: Java Stats, Alerts, Change Impact, Golden Path, Journey Health)
-USERNAME=wmadmin
-PASSWORD=your_password
+WM_USERNAME=wmadmin
+WM_PASSWORD=your_password
 
 # Application defaults (overridden per-request via FastAPI body)
 APP_ID=31854
@@ -218,9 +225,7 @@ OPENSEARCH_PAGE_SIZE=5000
 
 ## Common Gotchas
 
-**Java Stats returns None for SERVICE_HEALTH:** Requires a service_id — only triggers when a service name is mentioned and successfully matched.
-
-**Wrong arrays from Java Stats:** CURRENT_HEALTH must return 4 arrays. If only 3 are returned, ERROR_BUDGET_STATUS is being used instead. Primary intent takes precedence — check intent classification output.
+**Java Stats always returns 4 arrays for all services:** `fetch_api_data` + `transform_to_llm_format` always produces unhealthy_eb, at_risk_eb, unhealthy_response, at_risk_response for all services regardless of which intent triggered the fetch. Intent-based routing functions were removed — the Layer 2 LLM handles focus on specific services or EB-only views.
 
 **Memory adapter returns 0 records:** Verify ClickHouse connectivity and that `app_id = 31854` has data. (Note: services.yaml is not required for memory adapter — it's used for service name matching only.)
 
@@ -243,6 +248,8 @@ OPENSEARCH_PAGE_SIZE=5000
 **`clickhouse_infra` is a distinct data source key from `clickhouse`:** `memory_adapter.py` and `infra_adapter.py` hit two different tables and are gated independently. The orchestrator fires `infra_adapter` only when the classifier emits `clickhouse_infra` in `data_sources` (currently only the `INFRA_METRICS` intent does). Don't reuse the `clickhouse` key for new ClickHouse adapters — add a new keyed source instead so adapters stay independently gated.
 
 **`infra_data` has no service column:** Only `host_name` is available. If a user asks for infra on a specific service, the adapter still returns all hosts for the app/project — there is no host→service mapping in the codebase. The Layer 2 system prompt is aware of this; don't add fake service filtering in the adapter.
+
+**`last_usage`/`last_http_status` are side-channel return values on both LLM classes:** Both `IntentClassifier` and `LLMResponseGenerator` store token usage and HTTP status as instance variables (`self.last_usage`, `self.last_http_status`) that are overwritten on every `_call_bedrock()` invocation. `main.py` reads them immediately after `classify()` / `generate_response()` for token tracking. If you add retries, multiple calls, or async execution, you must re-read these before the next call overwrites them — silent data loss otherwise.
 
 **`_fetch_memory_adapter` re-resolves service_id internally:** `main.py` already resolves `service_id` near the top of `process_query()` but then calls `_fetch_memory_adapter(service_name=service, ...)` passing the raw name. The method re-resolves via `ServiceMatcher` internally. This double resolution is harmless but means you'll see two "Resolving service name" log lines per query when a service is mentioned. Do not assume `service_id` has been pre-resolved when working on `_fetch_memory_adapter`.
 

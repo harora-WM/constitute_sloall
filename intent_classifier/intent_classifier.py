@@ -49,6 +49,10 @@ class IntentClassifier:
         # Build system prompt
         self.system_prompt = self._build_system_prompt()
 
+        # Populated after each _call_bedrock() for token tracking
+        self.last_usage: Dict[str, int] = {}
+        self.last_http_status: str = "200"
+
     def _load_yaml(self, filename: str) -> Dict:
         """Load YAML file"""
         try:
@@ -156,6 +160,8 @@ Return ONLY the JSON object. No additional text.
 
             # Parse the response
             response_body = json.loads(response['body'].read())
+            self.last_usage = response_body.get('usage', {})
+            self.last_http_status = str(response.get('ResponseMetadata', {}).get('HTTPStatusCode', '200'))
             assistant_message = response_body['content'][0]['text']
 
             # Extract JSON object from response
@@ -175,13 +181,19 @@ Return ONLY the JSON object. No additional text.
                 return json.loads(assistant_message)
 
         except ClientError as e:
+            self.last_usage = {}
+            self.last_http_status = str(e.response.get('ResponseMetadata', {}).get('HTTPStatusCode', '500'))
             print(f"AWS Bedrock Error: {e}")
             return {}
         except json.JSONDecodeError as e:
+            self.last_usage = {}
+            self.last_http_status = "200"
             print(f"JSON Parsing Error: {e}")
             print(f"LLM Response: {assistant_message}")
             return {}
         except Exception as e:
+            self.last_usage = {}
+            self.last_http_status = "500"
             print(f"Unexpected error: {e}")
             return {}
 

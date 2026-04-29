@@ -10,6 +10,7 @@ STATE:
       data_sources:
         - java_stats_api
         - postgres
+        - alerts_count
 
     SERVICE_HEALTH:
       description: "Individual service health check"
@@ -19,16 +20,7 @@ STATE:
         - "Status of user-service?"
       data_sources:
         - java_stats_api
-
-    ERROR_BUDGET_STATUS:
-      description: "Error budget consumption and status"
-      examples:
-        - "What's the error budget status?"
-        - "Show me error budget for all services"
-        - "Error budget consumption?"
-        - "How much error budget is left?"
-      data_sources:
-        - java_stats_api
+        - alerts_count
 
     SLO_STATUS:
       description: "SLO breach and compliance status"
@@ -47,6 +39,7 @@ STATE:
         - "Any active warnings?"
       data_sources:
         - postgres
+        - alerts_count
 
     INCIDENT_STATUS:
       description: "Open incidents tracking"
@@ -56,6 +49,7 @@ STATE:
         - "Current incident status?"
       data_sources:
         - postgres
+        - alerts_count
 
 TREND:
   description: "How things are changing - Drift, degradation, improvement"
@@ -88,6 +82,7 @@ TREND:
       data_sources:
         - java_stats_api
         - clickhouse
+        - change_impact
 
     SLO_BURN_TREND:
       description: "Error budget consumption rate"
@@ -142,6 +137,8 @@ CAUSE:
         - java_stats_api
         - opensearch
         - clickhouse
+        - alerts_count
+        - change_impact
 
     ROOT_CAUSE_MULTI:
       description: "Root cause for multiple service failures"
@@ -153,6 +150,8 @@ CAUSE:
         - java_stats_api
         - opensearch
         - clickhouse
+        - alerts_count
+        - change_impact
 
     ALERT_DEBUG:
       description: "Why specific alert triggered"
@@ -163,6 +162,7 @@ CAUSE:
       data_sources:
         - postgres
         - opensearch
+        - alerts_count
 
     CONFIG_DRIFT_CAUSE:
       description: "Configuration change impact analysis"
@@ -173,6 +173,7 @@ CAUSE:
       data_sources:
         - postgres
         - clickhouse
+        - change_impact
 
 IMPACT:
   description: "What else is affected - Blast radius & business impact"
@@ -186,6 +187,7 @@ IMPACT:
       data_sources:
         - java_stats_api
         - clickhouse
+        - alerts_count
 
     USER_JOURNEY_IMPACT:
       description: "User flow/journey disruption — end-to-end health of multi-step business flows"
@@ -260,6 +262,7 @@ ACTION:
       data_sources:
         - clickhouse
         - postgres
+        - change_impact
 
     PREVENTIVE_ACTION:
       description: "Future prevention strategies"
@@ -292,6 +295,7 @@ PREDICT:
       data_sources:
         - clickhouse
         - java_stats_api
+        - change_impact
 
     CAPACITY_RISK:
       description: "Capacity and scaling risk"
@@ -367,6 +371,7 @@ EVIDENCE:
       data_sources:
         - postgres
         - opensearch
+        - change_impact
 
 INFRA:
   description: "Host-level infrastructure metrics - CPU, memory, disk (current or historical based on time range)"

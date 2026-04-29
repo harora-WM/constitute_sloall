@@ -34,6 +34,10 @@ class LLMResponseGenerator:
 
         self.system_prompt = self._build_system_prompt()
 
+        # Populated after each _call_bedrock() for token tracking
+        self.last_usage: dict = {}
+        self.last_http_status: str = "200"
+
     def _build_system_prompt(self) -> str:
         """Build comprehensive system prompt for SLO analysis"""
         return """# SLO Advisor — System Prompt v3
@@ -586,7 +590,6 @@ Enriched Intents: {', '.join(classification.get('enriched_intents', []))}
 
 Entities:
 - Service: {classification.get('entities', {}).get('service', 'Not specified')}
-- Time Range: {classification.get('entities', {}).get('time_range', 'Not specified')}
 
 # Data Retrieved
 
@@ -610,9 +613,6 @@ Unhealthy Services (EB):
 At Risk Services (EB):
 {json.dumps(java_stats.get('at_risk_services_eb', []), indent=2)}
 
-Healthy Services (EB):
-{json.dumps(java_stats.get('healthy_services_eb', [])[:5], indent=2) if java_stats.get('healthy_services_eb') else 'None'}
-(Showing first 5 healthy services, total: {len(java_stats.get('healthy_services_eb', []))})
 
 """
             # Add RESPONSE category if available
@@ -827,14 +827,20 @@ Generate your response now:"""
 
             # Parse response
             response_body = json.loads(response['body'].read())
+            self.last_usage = response_body.get('usage', {})
+            self.last_http_status = str(response.get('ResponseMetadata', {}).get('HTTPStatusCode', '200'))
             assistant_message = response_body['content'][0]['text']
 
             return assistant_message.strip()
 
         except ClientError as e:
+            self.last_usage = {}
+            self.last_http_status = str(e.response.get('ResponseMetadata', {}).get('HTTPStatusCode', '500'))
             print(f"AWS Bedrock Error: {e}")
             raise
         except Exception as e:
+            self.last_usage = {}
+            self.last_http_status = "500"
             print(f"Unexpected error calling Bedrock: {e}")
             raise
 

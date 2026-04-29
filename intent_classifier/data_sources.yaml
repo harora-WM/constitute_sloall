@@ -67,6 +67,25 @@ data_sources:
     timeout: 30
     retry_attempts: 3
 
+  alerts_count:
+    type: rest_api
+    description: "Alert action counts (open/closed/reoccurring) for the query time window"
+    capabilities:
+      - alert_count
+      - incident_signals
+    timeout: 30
+    retry_attempts: 3
+
+  change_impact:
+    type: rest_api
+    description: "Latest deployment change and top-5 EB/RESPONSE deviations pre/post release"
+    capabilities:
+      - deployment_impact
+      - pre_post_deviation
+      - change_correlation
+    timeout: 30
+    retry_attempts: 3
+
   opensearch:
     type: search_engine
     description: "Logs, traces, and full-text search"
@@ -86,6 +105,7 @@ intent_data_sources:
   STATE:
     - java_stats_api
     - postgres
+    - alerts_count
 
   TREND:
     - java_stats_api
@@ -99,12 +119,15 @@ intent_data_sources:
     - opensearch
     - postgres
     - clickhouse
+    - alerts_count
+    - change_impact
 
   IMPACT:
     - java_stats_api
     - clickhouse
     - golden_path_api
     - journey_health_api
+    - alerts_count
 
   ACTION:
     - clickhouse
@@ -123,6 +146,7 @@ intent_data_sources:
     - opensearch
     - postgres
     - clickhouse
+    - change_impact
 
   INFRA:
     - clickhouse_infra

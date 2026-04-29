@@ -10,6 +10,7 @@ import json
 import logging
 import traceback
 from contextlib import asynccontextmanager
+from datetime import datetime
 from typing import Dict, List, Any, Optional
 from dotenv import load_dotenv
 import uvicorn
@@ -25,13 +26,7 @@ sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'intent
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'context_adapter'))
 
 from intent_classifier.intent_classifier import IntentClassifier
-from context_adapter.java_stats import (
-    fetch_api_data,
-    transform_to_llm_format,
-    get_current_health,
-    get_service_health,
-    get_error_budget_status
-)
+from context_adapter.java_stats import fetch_api_data, transform_to_llm_format
 from context_adapter.memory_adapter import fetch_behavior_service_memory, transform_behavior_memory, fetch_patterns_by_intent
 from context_adapter.alert_count import fetch_alerts_for_orchestrator
 from context_adapter.change_pre_post import fetch_change_impact_for_orchestrator
@@ -39,6 +34,7 @@ from context_adapter.infra_adapter import fetch_infra_for_orchestrator
 from context_adapter.golden_path_adapter import fetch_golden_path_for_orchestrator
 from context_adapter.journey_health_adapter import fetch_journey_health_for_orchestrator
 from utils.service_matcher import ServiceMatcher
+from utils.token_tracker import TokenTracker
 from llm_response_generator import LLMResponseGenerator
 
 
@@ -96,6 +92,8 @@ class SLOOrchestrator:
         effective_app_id = app_id if app_id is not None else self.app_id
         effective_project_id = project_id if project_id is not None else self.project_id
 
+        tracker = TokenTracker(effective_app_id, effective_project_id, config.USERNAME)
+
         print("="*80)
         print("SLO ORCHESTRATOR - Processing Query")
         print("="*80)
@@ -103,7 +101,23 @@ class SLOOrchestrator:
 
         # Step 1: Classify intent
         print("🔍 Step 1: Analyzing intent...")
+        _t0 = datetime.now()
         classification_result = self.classifier.classify(user_query)
+        _t1 = datetime.now()
+        _usage = self.classifier.last_usage
+        tracker.log_task(
+            task_name="SLO.intent_classification",
+            model_name=self.classifier.model_id,
+            started_at=_t0,
+            completed_at=_t1,
+            input_tokens=_usage.get('input_tokens', 0),
+            output_tokens=_usage.get('output_tokens', 0),
+            task_status="failed" if "error" in classification_result else "completed",
+            response_status=self.classifier.last_http_status,
+            had_error="error" in classification_result,
+            error_type=classification_result.get("error") if "error" in classification_result else None,
+            token_usage_missing=not bool(_usage),
+        )
 
         if "error" in classification_result:
             return {
@@ -196,9 +210,6 @@ class SLOOrchestrator:
                 index=index,
                 app_id=effective_app_id,
                 project_id=effective_project_id,
-                intents=all_intents,
-                primary_intent=classification_result.get('primary_intent'),
-                service_id=service_id
             )
             if java_data:
                 adapter_data['java_stats_api'] = java_data
@@ -271,32 +282,34 @@ class SLOOrchestrator:
             else:
                 print("   ⚠️  Journey Health API returned no data\n")
 
-        # Fetch from Alerts Count API (always fetch regardless of intent)
-        print("   → Fetching from Alerts Count API...")
-        alerts_data = self._fetch_alerts_count(
-            start_time_ms=str(start_time),
-            end_time_ms=str(end_time),
-            app_id=effective_app_id,
-            project_id=effective_project_id
-        )
-        if alerts_data:
-            adapter_data['alerts_count'] = alerts_data
-            alert_summary = alerts_data.get('alerts_count', {}).get('alert', {}) if isinstance(alerts_data.get('alerts_count'), dict) else {}
-            total = alert_summary.get('totalCount')
-            open_c = alert_summary.get('openCount')
-            closed = alert_summary.get('closedCount')
-            print(f"   ✅ Alerts Count data retrieved (total: {total}, open: {open_c}, closed: {closed})\n")
-        else:
-            print("   ⚠️  Alerts Count API returned no data\n")
+        # Fetch from Alerts Count API (if in data_sources)
+        if 'alerts_count' in data_sources:
+            print("   → Fetching from Alerts Count API...")
+            alerts_data = self._fetch_alerts_count(
+                start_time_ms=str(start_time),
+                end_time_ms=str(end_time),
+                app_id=effective_app_id,
+                project_id=effective_project_id
+            )
+            if alerts_data:
+                adapter_data['alerts_count'] = alerts_data
+                alert_summary = alerts_data.get('alerts_count', {}).get('alert', {}) if isinstance(alerts_data.get('alerts_count'), dict) else {}
+                total = alert_summary.get('totalCount')
+                open_c = alert_summary.get('openCount')
+                closed = alert_summary.get('closedCount')
+                print(f"   ✅ Alerts Count data retrieved (total: {total}, open: {open_c}, closed: {closed})\n")
+            else:
+                print("   ⚠️  Alerts Count API returned no data\n")
 
-        # Fetch from Change Impact API (always fetch regardless of intent)
-        print("   → Fetching from Change Impact API (pre/post deviations)...")
-        change_impact_data = self._fetch_change_impact(app_id=effective_app_id, project_id=effective_project_id)
-        if change_impact_data:
-            adapter_data['change_impact'] = change_impact_data
-            print("   ✅ Change Impact data retrieved\n")
-        else:
-            print("   ⚠️  Change Impact API returned no data\n")
+        # Fetch from Change Impact API (if in data_sources)
+        if 'change_impact' in data_sources:
+            print("   → Fetching from Change Impact API (pre/post deviations)...")
+            change_impact_data = self._fetch_change_impact(app_id=effective_app_id, project_id=effective_project_id)
+            if change_impact_data:
+                adapter_data['change_impact'] = change_impact_data
+                print("   ✅ Change Impact data retrieved\n")
+            else:
+                print("   ⚠️  Change Impact API returned no data\n")
 
         # Note: postgres and opensearch adapters not yet implemented
         if 'postgres' in data_sources:
@@ -340,9 +353,26 @@ class SLOOrchestrator:
         print(f"Total data keys: {len(adapter_data)}\n")
 
         # Step 4: Generate conversational response using LLM
+        _t2 = datetime.now()
         conversational_result = self.response_generator.generate_response(
             user_query=user_query,
             orchestrator_output=result
+        )
+        _t3 = datetime.now()
+        _resp_usage = self.response_generator.last_usage
+        _resp_had_error = not conversational_result.get("success", True)
+        tracker.log_task(
+            task_name="SLO.response_generation",
+            model_name=self.response_generator.model_id,
+            started_at=_t2,
+            completed_at=_t3,
+            input_tokens=_resp_usage.get('input_tokens', 0),
+            output_tokens=_resp_usage.get('output_tokens', 0),
+            task_status="failed" if _resp_had_error else "completed",
+            response_status=self.response_generator.last_http_status,
+            had_error=_resp_had_error,
+            error_type=conversational_result.get("error") if _resp_had_error else None,
+            token_usage_missing=not bool(_resp_usage),
         )
 
         # Add conversational response to result
@@ -358,106 +388,8 @@ class SLOOrchestrator:
         index: str,
         app_id: int,
         project_id: int,
-        intents: Optional[set] = None,
-        primary_intent: Optional[str] = None,
-        service_id: Optional[int] = None
     ) -> Optional[Dict[str, Any]]:
-        """
-        Fetch data from Java Stats API (Watermelon API) with intent-based routing.
-
-        Routes to specific functions based on intent:
-        - CURRENT_HEALTH: Application-wide health across all services (returns 4 arrays)
-        - SERVICE_HEALTH: Health for a specific service (requires service_id)
-        - ERROR_BUDGET_STATUS: Error budget data (EB category only, returns 3 arrays)
-
-        Args:
-            start_time_ms: Start time in milliseconds (string)
-            end_time_ms: End time in milliseconds (string)
-            index: Time granularity (HOURLY, DAILY, etc.)
-            intents: Set of all intents (primary + secondary + enriched)
-            primary_intent: The primary intent from classification (takes precedence)
-            service_id: Optional service ID for service-specific queries
-
-        Returns:
-            Transformed LLM-ready data or None if failed
-        """
         try:
-            # Intent-based routing
-            if intents:
-                # Strategy: Check primary intent first to respect user's main question,
-                # then fall back to priority order for secondary/enriched intents
-
-                # First: Check if primary intent matches our supported intents
-                if primary_intent == "SERVICE_HEALTH":
-                    return get_service_health(
-                        app_id=app_id,
-                        start_time=start_time_ms,
-                        end_time=end_time_ms,
-                        service_id=service_id,
-                        index=index,
-                        username=self.java_stats_username,
-                        password=self.java_stats_password,
-                        project_id=project_id
-                    )
-                elif primary_intent == "CURRENT_HEALTH":
-                    return get_current_health(
-                        app_id=app_id,
-                        start_time=start_time_ms,
-                        end_time=end_time_ms,
-                        index=index,
-                        username=self.java_stats_username,
-                        password=self.java_stats_password,
-                        project_id=project_id
-                    )
-                elif primary_intent == "ERROR_BUDGET_STATUS":
-                    return get_error_budget_status(
-                        app_id=app_id,
-                        start_time=start_time_ms,
-                        end_time=end_time_ms,
-                        index=index,
-                        username=self.java_stats_username,
-                        password=self.java_stats_password,
-                        service_id=service_id,
-                        project_id=project_id
-                    )
-
-                # Fallback: Use priority order for secondary/enriched intents
-                # Priority order: SERVICE_HEALTH > ERROR_BUDGET_STATUS > CURRENT_HEALTH
-                elif "SERVICE_HEALTH" in intents:
-                    return get_service_health(
-                        app_id=app_id,
-                        start_time=start_time_ms,
-                        end_time=end_time_ms,
-                        service_id=service_id,
-                        index=index,
-                        username=self.java_stats_username,
-                        password=self.java_stats_password,
-                        project_id=project_id
-                    )
-                elif "ERROR_BUDGET_STATUS" in intents:
-                    return get_error_budget_status(
-                        app_id=app_id,
-                        start_time=start_time_ms,
-                        end_time=end_time_ms,
-                        index=index,
-                        username=self.java_stats_username,
-                        password=self.java_stats_password,
-                        service_id=service_id,
-                        project_id=project_id
-                    )
-                elif "CURRENT_HEALTH" in intents:
-                    return get_current_health(
-                        app_id=app_id,
-                        start_time=start_time_ms,
-                        end_time=end_time_ms,
-                        index=index,
-                        username=self.java_stats_username,
-                        password=self.java_stats_password,
-                        project_id=project_id
-                    )
-
-            # Fallback: Use general fetch_api_data + transform (backward compatibility)
-            print("   Using general java_stats fetch (no specific intent matched)")
             raw_data = fetch_api_data(
                 start_time_ms=start_time_ms,
                 end_time_ms=end_time_ms,
@@ -467,14 +399,9 @@ class SLOOrchestrator:
                 index=index,
                 project_id=project_id
             )
-
             if not raw_data:
                 return None
-
-            # Transform to LLM format
-            transformed = transform_to_llm_format(raw_data, start_time_ms, end_time_ms)
-            return transformed
-
+            return transform_to_llm_format(raw_data, start_time_ms, end_time_ms)
         except Exception as e:
             print(f"   ✗ Error fetching Java Stats: {e}")
             return None
