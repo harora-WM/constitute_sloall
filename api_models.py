@@ -31,6 +31,7 @@ class TimeResolution(BaseModel):
     end_time: Optional[int]
     index: Optional[str]
     time_range: Optional[str]
+    effective_time_range: Optional[str]
 
 
 class QueryMetadata(BaseModel):

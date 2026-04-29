@@ -104,7 +104,11 @@ for msg in st.session_state.messages:
                     if tr.get("start_time"):
                         start = datetime.fromtimestamp(tr["start_time"] / 1000).strftime("%Y-%m-%d %H:%M")
                         end   = datetime.fromtimestamp(tr["end_time"]   / 1000).strftime("%Y-%m-%d %H:%M")
-                        st.markdown(f"**Time range:** {start} → {end}")
+                        eff   = tr.get("effective_time_range")
+                        if eff:
+                            st.markdown(f"**Time range:** {eff} ({start} → {end})")
+                        else:
+                            st.markdown(f"**Time range:** {start} → {end}")
                         st.markdown(f"**Index:** `{tr.get('index')}`")
 
                 sources = _t.get("data_sources_used", [])

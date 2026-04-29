@@ -246,6 +246,15 @@ def _parse_deterministic(query: str) -> Optional[tuple[datetime, datetime]]:
 
     # ── Relative time windows ────────────────────────────────────────────────
 
+    # Fractional: "last half hour", "last half day", etc.
+    m = re.search(
+        r"\blast\s+half\s+(seconds?|secs?|minutes?|mins?|hours?|hrs?|days?|weeks?|months?|years?)\b",
+        q,
+    )
+    if m:
+        total_secs = 0.5 * UNIT_SECONDS.get(m.group(1), 3600)
+        return (now - timedelta(seconds=total_secs), now)
+
     # Compound: "last 2 hours 20 minutes", "last 1 day 5 hours", etc.
     m = re.search(
         r"\blast\s+((?:\d+(?:\.\d+)?\s*"

@@ -168,8 +168,22 @@ class SLOOrchestrator:
             # Always auto-calculate index from the final start/end
             duration_days = (end_time - start_time) / (1000 * 60 * 60 * 24)
             index = 'DAILY' if duration_days > 3 else 'HOURLY'
+            # Human-readable label for the *actual* data window (after gap enforcement).
+            # The LLM uses this so its response describes the real window, not the
+            # user's requested range (which may have been shorter than the 2-hour minimum).
+            _dur_secs = (end_time - start_time) / 1000
+            if _dur_secs < 3600:
+                _v = round(_dur_secs / 60)
+                effective_time_range = f"last {_v} minute{'s' if _v != 1 else ''}"
+            elif _dur_secs < 86400:
+                _v = _dur_secs / 3600
+                effective_time_range = f"last {_v:.0f} hour{'s' if _v != 1 else ''}"
+            else:
+                _v = _dur_secs / 86400
+                effective_time_range = f"last {_v:.0f} day{'s' if _v != 1 else ''}"
         else:
             index = timestamp_resolution.get('index')
+            effective_time_range = primary_range.get('time_range', 'unknown window')
 
         print(f"\n📊 Step 2: Fetching data from adapters...")
         print(f"   Data Sources: {', '.join(data_sources)}")
@@ -293,7 +307,8 @@ class SLOOrchestrator:
                 "start_time": start_time,
                 "end_time": end_time,
                 "index": index,
-                "time_range": primary_range.get('time_range')
+                "time_range": primary_range.get('time_range'),
+                "effective_time_range": effective_time_range
             },
             "data_sources_used": list(adapter_data.keys()),
             "data": adapter_data,

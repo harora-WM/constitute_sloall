@@ -552,10 +552,15 @@ Tailor your response structure to the user's intent:
         classification = orchestrator_output.get('classification', {})
         data = orchestrator_output.get('data', {})
         metadata = orchestrator_output.get('metadata', {})
+        time_resolution = orchestrator_output.get('time_resolution', {})
+        effective_time_range = time_resolution.get('effective_time_range', '')
 
         # Build structured prompt
         prompt = f"""# User Query
 {user_query}
+
+# Actual Data Window
+IMPORTANT: All data below was fetched for the **{effective_time_range}** window. Use this exact label (not the user's phrasing) in your response headers and summaries.
 
 # Intent Classification
 Primary Intent: {classification.get('primary_intent', 'Unknown')}

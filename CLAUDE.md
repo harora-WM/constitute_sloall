@@ -49,7 +49,7 @@ cd context_adapter && python infra_adapter.py
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/health` | Liveness/readiness probe. Returns 503 if orchestrator failed to initialize. |
-| POST | `/query` | Submit a natural language SLO query. Body: `QueryRequest` (`query`, `app_id`, `project_id`, optional `start_time`, `end_time` in Unix epoch ms). `start_time`/`end_time` are only used when the query contains no time reference; if the query mentions a time expression they are ignored entirely. A minimum 1-hour gap is always enforced. `index` is always auto-calculated (`>3 days → DAILY`, else `HOURLY`). Typical latency: 8–15s (two LLM calls + sequential data fetches). |
+| POST | `/query` | Submit a natural language SLO query. Body: `QueryRequest` (`query`, `app_id`, `project_id`, optional `start_time`, `end_time` in Unix epoch ms). `start_time`/`end_time` are only used when the query contains no time reference; if the query mentions a time expression they are ignored entirely. A minimum 2-hour gap is always enforced. `index` is always auto-calculated (`>3 days → DAILY`, else `HOURLY`). Typical latency: 8–15s (two LLM calls + sequential data fetches). |
 
 **Do NOT run FastAPI with more than 1 worker** — boto3 clients are stateful and multiple workers cause Bedrock rate limit issues. Always use `--workers 1`.
 
@@ -67,9 +67,9 @@ User Query
   -> Step 3: Data Fetching (sequential)
       java_stats_api    -- if 'java_stats_api' in data_sources (intent-routed)
       clickhouse        -- if 'clickhouse' in data_sources (all patterns, no filtering)
-      clickhouse_infra  -- if 'clickhouse_infra' in data_sources (host-level infra metrics)
-      alerts_count      -- if 'alerts_count' in data_sources
       change_impact     -- if 'change_impact' in data_sources
+      [clickhouse_infra]  -- DISABLED; adapter and intent both commented out
+      [alerts_count]      -- DISABLED; adapter and intent both commented out
   -> Step 4: Conversational Response (LLM Call #2, llm_response_generator.py)
       Input: full orchestrator output
       Output: natural language answer
@@ -82,16 +82,16 @@ User Query
 
 **`main.py`** — Contains `SLOOrchestrator` class, `main()` interactive CLI, and the FastAPI `app` instance. `app_id` and `project_id` come from `config.APP_ID` / `config.PROJECT_ID` for CLI; for API they come from the request body (defaulting to the same config values if not supplied). On every startup, `SLOOrchestrator.__init__()` automatically refreshes `services.yaml` by calling `fetch_services.py` functions before initializing `ServiceMatcher` — no need to run `fetch_services.py` manually.
 
-**`intent_classifier/intent_classifier.py`** — Layer 1 LLM (AWS Bedrock). Outputs primary/secondary/enriched intents, entities (`service` only — no `time_range`/`comparison_range`), data_sources list, and UTC millisecond timestamps. Timestamp resolution calls `timestamp.py` with the raw user query string. Config files: `intent_categories.yaml` (10 categories including `INFRA`, 50+ intents), `enrichment_rules.yaml` (maps primary intents → additional enriched intents to auto-add), `data_sources.yaml`.
+**`intent_classifier/intent_classifier.py`** — Layer 1 LLM (AWS Bedrock). Outputs primary/secondary/enriched intents, entities (`service` only — no `time_range`/`comparison_range`), data_sources list, and UTC millisecond timestamps. Timestamp resolution calls `timestamp.py` with the raw user query string. Config files: `intent_categories.yaml` (9 active categories: STATE, TREND, PATTERN, CAUSE, IMPACT, ACTION, PREDICT, OPTIMIZE, EVIDENCE; 28 active intents), `enrichment_rules.yaml` (maps primary intents → additional enriched intents to auto-add), `data_sources.yaml`.
 
-Key enrichment chains that indirectly trigger data sources:
-- `ROOT_CAUSE_SINGLE` / `ROOT_CAUSE_MULTI` → enriches `INFRA_METRICS` → triggers `clickhouse_infra`; also directly carries `change_impact` in their own data_sources
-- `ALERT_DEBUG` → enriches `ROOT_CAUSE_SINGLE` → enriches `INFRA_METRICS` → triggers `clickhouse_infra` (two-hop); also picks up `change_impact` via `ROOT_CAUSE_SINGLE`'s direct data_sources
-- `CAPACITY_RISK` / `PERFORMANCE_BOTTLENECK` → enriches `INFRA_METRICS` → triggers `clickhouse_infra`
-- `CURRENT_HEALTH` → enriches `ALERT_STATUS` + `INCIDENT_STATUS` → both carry `alerts_count`
+Key active enrichment chains that indirectly trigger data sources:
+- `ROOT_CAUSE_SINGLE` / `ROOT_CAUSE_MULTI` → enriches `UNDERCURRENTS_TREND` + `MITIGATION_STEPS`; also directly carries `change_impact` in their own data_sources
 - `CHANGE_RISK` / `ROLLBACK_ADVICE` → enriches `PRE_POST_CHANGE` + `CHANGE_AUDIT` → both carry `change_impact`
+- `SLO_BURN_TREND` → enriches `RISK_PREDICTION` + `CAPACITY_RISK`
+- `CAPACITY_RISK` / `PERFORMANCE_BOTTLENECK` → enriches `QUERY_OPTIMIZATION` + `RESOURCE_WASTE` (the `INFRA_METRICS` enrichment in these chains is DISABLED)
+- `CURRENT_HEALTH` enrichment to `ALERT_STATUS` / `INCIDENT_STATUS` is DISABLED; `ALERT_DEBUG` intent is DISABLED entirely
 
-So a query classified as `ROOT_CAUSE_SINGLE` will silently add both `clickhouse_infra` (via enrichment) and `change_impact` (directly in its data_sources) without explicit user intent. Multi-hop chains (e.g. `ALERT_DEBUG → ROOT_CAUSE_SINGLE → INFRA_METRICS`) are resolved in a single pass by `intent_classifier.py` — all enrichments are flattened before returning.
+All enrichments are resolved in a single flattened pass by `intent_classifier.py` before returning. Multi-hop chains like `RECURRING_INCIDENT → ROOT_CAUSE_SINGLE → UNDERCURRENTS_TREND` work because the pass iterates over the growing set until stable.
 
 **`context_adapter/java_stats.py`** — Fetches real-time SLO metrics from Watermelon API via Keycloak auth. Always calls `fetch_api_data()` → `transform_to_llm_format()`, returning 4 arrays (unhealthy_eb, at_risk_eb, unhealthy_response, at_risk_response) for all services regardless of intent. Service filtering and EB-only views are left to the Layer 2 LLM.
 
@@ -111,7 +111,7 @@ Currently sanitized by `_sanitize_response()`: `Java Stats API`, `Java Stats`, `
 
 **`api_models.py`** — Pydantic v2 request/response models. `QueryRequest` takes `query`, `app_id` (default `31854`), `project_id` (default `215853`), and optional `start_time`/`end_time` (Unix epoch ms, default `None`). `data` field in `QueryResponse` is `Dict[str, Any]` since each adapter returns a different schema.
 
-**`utils/service_matcher.py`** — Fuzzy matching via `SequenceMatcher`. Loads `services.yaml` (125 services). Threshold: 0.3; substring matches boosted to 0.7. Returns ranked results with similarity scores.
+**`utils/service_matcher.py`** — Fuzzy matching via `SequenceMatcher`. Loads `services.yaml` (160 services). Threshold: 0.3; substring matches boosted to 0.7. Returns ranked results with similarity scores.
 
 **`intent_classifier/timestamp.py`** — Converts the raw user query directly to UTC millisecond timestamps using a **hybrid three-stage approach**: (1) deterministic regex/rule-based parsing, (2) Claude Sonnet LLM fallback for complex/ambiguous expressions, (3) hard fallback to last 2 hours. Determines index granularity: HOURLY (<=3 days), DAILY (>3 days). Called with the raw query string, not an LLM-extracted label.
 
@@ -150,7 +150,7 @@ MAX_TOKENS=500
 TEMPERATURE=0.0
 
 # Layer 2 LLM (response generation)
-RESPONSE_MAX_TOKENS=2000
+RESPONSE_MAX_TOKENS=5000
 RESPONSE_TEMPERATURE=0.3
 
 # Keycloak
@@ -184,6 +184,7 @@ CLICKHOUSE_URL=http://ec2-47-129-241-41.ap-southeast-1.compute.amazonaws.com:812
 CLICKHOUSE_USERNAME=wm_test
 CLICKHOUSE_PASSWORD=your_password
 CLICKHOUSE_DATABASE=metrics
+CLICKHOUSE_SERVICES_TABLE=ai_service_features_hourly
 # DISABLED: CLICKHOUSE_INFRA_TABLE=infra_data
 
 # OpenSearch (adapter not yet integrated)
@@ -235,6 +236,6 @@ The envelope format varies by adapter — there is no single canonical schema. A
 
 The Layer 2 system prompt documents how to interpret each of these structures.
 
-**`ARCHITECTURE.md` is partially outdated:** It references 76 behavior patterns and mentions "128 total services", but the current counts are 108 patterns and 125 services. It also says "No tests" but `tests/test_new_adapters.py` exists. Treat `CLAUDE.md` as the authoritative reference; `ARCHITECTURE.md` documents an earlier state of the system.
+**`ARCHITECTURE.md` is partially outdated:** It references 76 behavior patterns and mentions "128 total services", but the current counts are 108 patterns and 160 services. It also says "No tests" but `tests/test_new_adapters.py` exists. Treat `CLAUDE.md` as the authoritative reference; `ARCHITECTURE.md` documents an earlier state of the system.
 
 **`README.md` has stale references:** It shows `source venv/bin/activate` (should be `.venv`) and includes a test command `python utils/time_range_resolver.py` pointing to a file that no longer exists. The equivalent standalone test is `cd intent_classifier && python timestamp.py "your query"`, which is already listed in the Development Commands above.
