@@ -8,6 +8,8 @@ import os
 import sys
 import json
 import requests
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 from typing import Dict, List, Any, Optional, Set
 from datetime import datetime
 
@@ -108,7 +110,8 @@ def fetch_behavior_service_memory(
                 "query": query.strip(),
                 "database": config.CLICKHOUSE_DATABASE
             },
-            timeout=30
+            timeout=30,
+            verify=False
         )
         response.raise_for_status()
 

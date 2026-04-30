@@ -7,6 +7,8 @@ Fetches all distinct services for an application from ClickHouse and creates a s
 import os
 import sys
 import requests
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 import json
 import yaml
 from typing import Dict, List, Any
@@ -50,7 +52,8 @@ def fetch_distinct_services(application_id: int) -> List[Dict[str, Any]]:
             CLICKHOUSE_URL,
             auth=(CLICKHOUSE_USER, CLICKHOUSE_PASSWORD),
             params={"query": query.strip()},
-            timeout=30
+            timeout=30,
+            verify=False
         )
         response.raise_for_status()
 

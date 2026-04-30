@@ -109,6 +109,8 @@ Internal system names (ClickHouse, Java Stats API, etc.) are intentionally hidde
 
 Currently sanitized by `_sanitize_response()`: `Java Stats API`, `Java Stats`, `ClickHouse`. **Not yet sanitized:** `SolarWinds`, `Zabbix` (both mentioned by name in the Layer 2 system prompt under section 7). If the LLM leaks these, add replacements — e.g. replace `SolarWinds`/`Zabbix` with `monitoring system`.
 
+Two system prompt sections are defined but excluded from the active prompt: `_SECTION_3_ALERT` (alert & incident history interpretation rules, including the critical note that alerts are application-level only, never service-level) and `_SECTION_5_INFRA` (host-level infra metrics interpretation rules, including dual-tool handling for SolarWinds vs Zabbix). `_ALERT_INTERPRETATION_RULES` (severity 1–7 table) is also defined but unused. To re-enable: insert the variable(s) into the `return` string in `_build_system_prompt()`, renumber the active sections accordingly (currently 1–4), and re-enable the corresponding adapter + intent classifier entries (see disabled entries in Data Sources table above).
+
 **`api_models.py`** — Pydantic v2 request/response models. `QueryRequest` takes `query`, `app_id` (default `31854`), `project_id` (default `215853`), and optional `start_time`/`end_time` (Unix epoch ms, default `None`). `data` field in `QueryResponse` is `Dict[str, Any]` since each adapter returns a different schema.
 
 **`utils/service_matcher.py`** — Fuzzy matching via `SequenceMatcher`. Loads `services.yaml` (160 services). Threshold: 0.3; substring matches boosted to 0.7. Returns ranked results with similarity scores.
