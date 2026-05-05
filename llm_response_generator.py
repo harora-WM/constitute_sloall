@@ -6,7 +6,7 @@ Uses AWS Bedrock Claude Sonnet 4.6 to analyze SLO data and answer user queries
 
 import json
 import boto3
-from typing import Dict, Any
+from typing import Dict, Any, Generator
 from botocore.exceptions import ClientError
 import config
 
@@ -496,6 +496,46 @@ Tailor your response structure to the user's intent:
                 "error": str(e),
                 "response": "I encountered an error while generating the response. Please try again."
             }
+
+    def generate_response_stream(
+        self,
+        user_query: str,
+        orchestrator_output: Dict[str, Any]
+    ) -> Generator[str, None, None]:
+        """
+        Stream a conversational response from orchestrator output.
+        Yields raw text chunks as they arrive from Bedrock.
+        Call _sanitize_response on the accumulated text after iteration.
+        """
+        try:
+            prompt = self._build_prompt(user_query, orchestrator_output)
+            print("\n💬 Generating conversational response (streaming)...")
+
+            request_body = {
+                "anthropic_version": "bedrock-2023-05-31",
+                "max_tokens": self.max_tokens,
+                "temperature": self.temperature,
+                "system": self.system_prompt,
+                "messages": [{"role": "user", "content": prompt}]
+            }
+
+            response = self.bedrock_runtime.invoke_model_with_response_stream(
+                modelId=self.model_id,
+                body=json.dumps(request_body)
+            )
+
+            for event in response["body"]:
+                chunk = event.get("chunk")
+                if chunk:
+                    data = json.loads(chunk["bytes"].decode())
+                    if data.get("type") == "content_block_delta":
+                        delta = data.get("delta", {})
+                        if delta.get("type") == "text_delta":
+                            yield delta.get("text", "")
+
+        except ClientError as e:
+            print(f"AWS Bedrock Error: {e}")
+            raise
 
     def _sanitize_response(self, text: str) -> str:
         """

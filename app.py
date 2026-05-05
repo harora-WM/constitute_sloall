@@ -7,6 +7,7 @@ import os
 import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config
+import json
 import requests
 import streamlit as st
 from datetime import datetime
@@ -130,79 +131,99 @@ if query:
     with st.chat_message("user"):
         st.markdown(query)
 
-    # Call API
+    # Call API (streaming)
     with st.chat_message("assistant"):
-        with st.spinner("Analysing..."):
-            try:
-                payload = {"query": query, "app_id": int(app_id), "project_id": int(project_id)}
-                if start_time_input.strip():
-                    payload["start_time"] = int(start_time_input.strip())
-                if end_time_input.strip():
-                    payload["end_time"] = int(end_time_input.strip())
+        try:
+            payload = {"query": query, "app_id": int(app_id), "project_id": int(project_id)}
+            if start_time_input.strip():
+                payload["start_time"] = int(start_time_input.strip())
+            if end_time_input.strip():
+                payload["end_time"] = int(end_time_input.strip())
 
-                response = requests.post(
-                    f"{api_base}/query",
-                    json=payload,
-                    timeout=60,
-                )
+            with requests.post(
+                f"{api_base}/query/stream",
+                json=payload,
+                stream=True,
+                timeout=120,
+            ) as resp:
+                resp.raise_for_status()
 
-                if response.status_code == 200:
-                    data = response.json()
-                    answer = data.get("conversational_response", "No response generated.")
-                    st.markdown(answer)
+                line_iter = resp.iter_lines(decode_unicode=True)
+                technical = None
 
-                    technical = {
-                        "primary_intent":   data["classification"]["primary_intent"],
-                        "enriched_intents": data["classification"]["enriched_intents"],
-                        "time_resolution":  data["time_resolution"],
-                        "data_sources_used": data["data_sources_used"],
-                        "data":             data["data"],
-                    }
+                # Phase 1: wait for metadata while data is being fetched (spinner shows)
+                with st.spinner("Analysing..."):
+                    for line in line_iter:
+                        if not line or not line.startswith("data: "):
+                            continue
+                        event = json.loads(line[6:])
+                        if event["type"] == "metadata":
+                            technical = event["data"]
+                            break
+                        elif event["type"] == "error":
+                            raise Exception(event.get("detail", "Unknown error from server"))
 
+                # Phase 2: spinner gone — stream LLM tokens directly into chat
+                def token_gen():
+                    for line in line_iter:
+                        if not line or not line.startswith("data: "):
+                            continue
+                        event = json.loads(line[6:])
+                        if event["type"] == "token":
+                            yield event["text"]
+                        elif event["type"] in ("done", "error"):
+                            break
+
+                full_answer = st.write_stream(token_gen())
+
+                if technical:
                     with st.expander("Technical details"):
                         col1, col2 = st.columns(2)
                         with col1:
-                            st.markdown(f"**Primary intent:** `{technical['primary_intent']}`")
-                            if technical["enriched_intents"]:
-                                st.markdown("**Enriched intents:** " + ", ".join(f"`{i}`" for i in technical["enriched_intents"]))
+                            st.markdown(f"**Primary intent:** `{technical['classification']['primary_intent']}`")
+                            enriched = technical["classification"].get("enriched_intents", [])
+                            if enriched:
+                                st.markdown("**Enriched intents:** " + ", ".join(f"`{i}`" for i in enriched))
                         with col2:
-                            tr = technical["time_resolution"]
+                            tr = technical.get("time_resolution", {})
                             if tr.get("start_time"):
                                 start = datetime.fromtimestamp(tr["start_time"] / 1000).strftime("%Y-%m-%d %H:%M")
                                 end   = datetime.fromtimestamp(tr["end_time"]   / 1000).strftime("%Y-%m-%d %H:%M")
-                                st.markdown(f"**Time range:** {start} → {end}")
+                                eff   = tr.get("effective_time_range")
+                                if eff:
+                                    st.markdown(f"**Time range:** {eff} ({start} → {end})")
+                                else:
+                                    st.markdown(f"**Time range:** {start} → {end}")
                                 st.markdown(f"**Index:** `{tr.get('index')}`")
 
-                        sources = technical["data_sources_used"]
+                        sources = technical.get("data_sources_used", [])
                         if sources:
                             st.markdown("**Data sources used:** " + ", ".join(f"`{source_label(s)}`" for s in sources))
 
-                        for source, sdata in technical["data"].items():
+                        for source, sdata in technical.get("data", {}).items():
                             if isinstance(sdata, dict):
                                 render_source_stat(source, sdata)
 
-                    st.session_state.messages.append({
-                        "role": "assistant",
-                        "content": answer,
-                        "technical": technical,
-                    })
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "content": full_answer or "",
+                    "technical": {
+                        "primary_intent":    technical["classification"]["primary_intent"],
+                        "enriched_intents":  technical["classification"].get("enriched_intents", []),
+                        "time_resolution":   technical.get("time_resolution", {}),
+                        "data_sources_used": technical.get("data_sources_used", []),
+                        "data":              technical.get("data", {}),
+                    } if technical else None,
+                })
 
-                else:
-                    err = response.json().get("detail", response.text)
-                    st.error(f"API error {response.status_code}: {err}")
-                    st.session_state.messages.append({
-                        "role": "assistant",
-                        "content": f"Error {response.status_code}: {err}",
-                    })
-
-            except requests.exceptions.ConnectionError:
-                msg = "Cannot connect to the backend. Make sure the FastAPI server is running:\n```\nuvicorn main:app --host 0.0.0.0 --port 8000 --workers 1\n```"
-                st.error(msg)
-                st.session_state.messages.append({"role": "assistant", "content": msg})
-            except requests.exceptions.Timeout:
-                msg = "Request timed out (>60s). The backend may still be processing."
-                st.error(msg)
-                st.session_state.messages.append({"role": "assistant", "content": msg})
-            except Exception as e:
-                st.error(f"Unexpected error: {e}")
-                st.session_state.messages.append({"role": "assistant", "content": str(e)})
+        except requests.exceptions.ConnectionError:
+            msg = "Cannot connect to the backend. Make sure the FastAPI server is running:\n```\nuvicorn main:app --host 0.0.0.0 --port 8000 --workers 1\n```"
+            st.error(msg)
+            st.session_state.messages.append({"role": "assistant", "content": msg})
+        except requests.exceptions.Timeout:
+            msg = "Request timed out (>120s). The backend may still be processing."
+            st.error(msg)
+            st.session_state.messages.append({"role": "assistant", "content": msg})
+        except Exception as e:
+            st.error(f"Unexpected error: {e}")
+            st.session_state.messages.append({"role": "assistant", "content": str(e)})

@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from api_models import QueryRequest, QueryResponse, ErrorResponse, HealthResponse
 import config
 
@@ -84,19 +84,12 @@ class SLOOrchestrator:
         print("✅ LLM Response Generator ready\n")
 
 
-    def process_query(self, user_query: str, app_id: int = None, project_id: int = None,
-                      start_time: int = None, end_time: int = None) -> Dict[str, Any]:
+    def _prepare_context(self, user_query: str, app_id: int = None, project_id: int = None,
+                         start_time: int = None, end_time: int = None) -> Dict[str, Any]:
         """
-        Process a user query end-to-end
-
-        Args:
-            user_query: Natural language query from user
-
-        Returns:
-            Dictionary containing:
-            - classification: Intent classification results
-            - data: Aggregated data from all adapters
-            - metadata: Processing metadata
+        Run intent classification and all data fetching. Returns the intermediate result
+        dict (without conversational_response). Used by both process_query and the
+        streaming endpoint so the two share the same data-fetch logic.
         """
         effective_app_id = app_id if app_id is not None else self.app_id
         effective_project_id = project_id if project_id is not None else self.project_id
@@ -293,7 +286,6 @@ class SLOOrchestrator:
             print("   ⚠️  OpenSearch adapter not yet implemented")
             adapter_data['opensearch'] = {"status": "not_implemented"}
 
-        # Step 4: Build final response
         result = {
             "success": True,
             "query": user_query,
@@ -326,16 +318,26 @@ class SLOOrchestrator:
         print(f"\nData sources fetched: {', '.join(adapter_data.keys())}")
         print(f"Total data keys: {len(adapter_data)}\n")
 
-        # Step 4: Generate conversational response using LLM
+        return result
+
+    def process_query(self, user_query: str, app_id: int = None, project_id: int = None,
+                      start_time: int = None, end_time: int = None) -> Dict[str, Any]:
+        """
+        Process a user query end-to-end (blocking).
+
+        Returns:
+            Dictionary containing classification, data, conversational_response, and metadata.
+        """
+        result = self._prepare_context(user_query, app_id, project_id, start_time, end_time)
+        if not result.get("success"):
+            return result
+
         conversational_result = self.response_generator.generate_response(
             user_query=user_query,
             orchestrator_output=result
         )
-
-        # Add conversational response to result
         result["conversational_response"] = conversational_result.get("response", "")
         result["response_metadata"] = conversational_result.get("metadata", {})
-
         return result
 
     def _fetch_java_stats(
@@ -717,6 +719,69 @@ def run_query(body: QueryRequest):
             detail=result.get("error", "Orchestrator returned failure"),
         )
     return result
+
+
+@app.post("/query/stream", tags=["slo"])
+def run_query_stream(body: QueryRequest):
+    """
+    Submit a natural language SLO query and receive a streaming response.
+
+    Uses Server-Sent Events (SSE). The stream has three event types:
+    - `metadata`  — sent once after data fetching completes; contains classification,
+                    time_resolution, data_sources_used, and data fields.
+    - `token`     — one per LLM text chunk; contains a `text` field.
+    - `done`      — sent once when generation is complete; contains `full_text`
+                    (the sanitized full response, for session storage).
+    - `error`     — sent if anything fails; contains a `detail` field.
+    """
+    if _orchestrator is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Orchestrator not initialized",
+        )
+    logger.info(f"Stream query: {body.query!r}, app_id={body.app_id}, project_id={body.project_id}")
+
+    def event_stream():
+        try:
+            result = _orchestrator._prepare_context(
+                user_query=body.query,
+                app_id=body.app_id,
+                project_id=body.project_id,
+                start_time=body.start_time,
+                end_time=body.end_time,
+            )
+
+            if not result.get("success"):
+                yield f"data: {json.dumps({'type': 'error', 'detail': result.get('error', 'Orchestrator returned failure')})}\n\n"
+                return
+
+            # Phase 1: send metadata so the client can render technical details
+            yield f"data: {json.dumps({'type': 'metadata', 'data': result})}\n\n"
+
+            # Phase 2: stream LLM response tokens
+            full_text = ""
+            try:
+                for chunk in _orchestrator.response_generator.generate_response_stream(body.query, result):
+                    full_text += chunk
+                    yield f"data: {json.dumps({'type': 'token', 'text': chunk})}\n\n"
+
+                sanitized = _orchestrator.response_generator._sanitize_response(full_text)
+                yield f"data: {json.dumps({'type': 'done', 'full_text': sanitized})}\n\n"
+                print("✅ Streaming response complete")
+
+            except Exception as e:
+                logger.error(f"Streaming LLM error: {e}")
+                yield f"data: {json.dumps({'type': 'error', 'detail': str(e)})}\n\n"
+
+        except Exception as e:
+            logger.error(f"Streaming context error: {e}")
+            yield f"data: {json.dumps({'type': 'error', 'detail': str(e)})}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 if __name__ == "__main__":
