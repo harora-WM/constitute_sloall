@@ -565,42 +565,47 @@ def main():
                     print("⚠️  No result to export. Run a query first.")
                 continue
 
-            # Process the query
-            result = orchestrator.process_query(user_input)
+            # Fetch context (classification + data), then stream the LLM response
+            result = orchestrator._prepare_context(user_input)
+            if not result.get('success'):
+                print(f"\n❌ Error: {result.get('error')}")
+                continue
+
+            print("\n" + "="*80)
+            print("💬 CONVERSATIONAL RESPONSE")
+            print("="*80 + "\n")
+
+            chunks = []
+            for chunk in orchestrator.response_generator.generate_response_stream(user_input, result):
+                print(chunk, end="", flush=True)
+                chunks.append(chunk)
+            print()
+
+            full_text = orchestrator.response_generator._sanitize_response("".join(chunks))
+            result["conversational_response"] = full_text
+
             last_result = result
 
-            # Print conversational response prominently
-            if result.get('success'):
-                # Display the conversational response
-                print("\n" + "="*80)
-                print("💬 CONVERSATIONAL RESPONSE")
-                print("="*80)
-                print()
-                print(result.get('conversational_response', 'No response generated'))
-                print()
+            # Print technical summary for reference
+            print("="*80)
+            print("📋 Technical Summary")
+            print("="*80)
+            print(f"   Primary Intent: {result['classification']['primary_intent']}")
+            print(f"   Data Sources Used: {', '.join(result['data_sources_used'])}")
 
-                # Print technical summary for reference
-                print("="*80)
-                print("📋 Technical Summary")
-                print("="*80)
-                print(f"   Primary Intent: {result['classification']['primary_intent']}")
-                print(f"   Data Sources Used: {', '.join(result['data_sources_used'])}")
+            # Print data stats
+            for source, data in result['data'].items():
+                if isinstance(data, dict) and 'stats' in data:
+                    stats = data['stats']
+                    print(f"\n   {source.upper()} Stats:")
+                    for key, value in stats.items():
+                        print(f"      • {key}: {value}")
 
-                # Print data stats
-                for source, data in result['data'].items():
-                    if isinstance(data, dict) and 'stats' in data:
-                        stats = data['stats']
-                        print(f"\n   {source.upper()} Stats:")
-                        for key, value in stats.items():
-                            print(f"      • {key}: {value}")
-
-                # Auto-export result to JSON
-                print()
-                timestamp = int(result['time_resolution']['start_time'])
-                filename = f"slo_result_{timestamp}.json"
-                orchestrator.export_to_json(result, filename)
-            else:
-                print(f"\n❌ Error: {result.get('error')}")
+            # Auto-export result to JSON
+            print()
+            timestamp = int(result['time_resolution']['start_time'])
+            filename = f"slo_result_{timestamp}.json"
+            orchestrator.export_to_json(result, filename)
 
         except KeyboardInterrupt:
             print("\n\nGoodbye! 👋")

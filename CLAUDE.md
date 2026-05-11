@@ -12,6 +12,7 @@ A **Conversational SLO (Service Level Objective) Manager** using AWS Bedrock Cla
 # Setup
 source .venv/bin/activate
 pip install -r requirements.txt
+pip install streamlit   # not in requirements.txt — required for app.py only
 
 # Interactive CLI (must run from project root)
 python main.py
@@ -81,7 +82,7 @@ User Query
 
 **`config.py`** — Single source of truth for all configuration. Loads `.env` using its own `__file__` path (works from any working directory). All modules — `context_adapter/`, `intent_classifier/`, and `main.py` — import this instead of calling `os.getenv()` directly.
 
-**`main.py`** — Contains `SLOOrchestrator` class, `main()` interactive CLI, and the FastAPI `app` instance. `app_id` and `project_id` come from `config.APP_ID` / `config.PROJECT_ID` for CLI; for API they come from the request body (defaulting to the same config values if not supplied). On every startup, `SLOOrchestrator.__init__()` automatically refreshes `services.yaml` by calling `fetch_services.py` functions before initializing `ServiceMatcher` — no need to run `fetch_services.py` manually. Data fetching logic lives in `_prepare_context()` (intent classification + all adapter calls, returns result dict without LLM response); `process_query()` calls it then calls `generate_response()`. The `/query/stream` endpoint calls `_prepare_context()` directly, sends a `metadata` SSE event, then streams tokens from `generate_response_stream()`.
+**`main.py`** — Contains `SLOOrchestrator` class, `main()` interactive CLI, and the FastAPI `app` instance. `app_id` and `project_id` come from `config.APP_ID` / `config.PROJECT_ID` for CLI; for API they come from the request body (defaulting to the same config values if not supplied). On every startup, `SLOOrchestrator.__init__()` automatically refreshes `services.yaml` by calling `fetch_services.py` functions before initializing `ServiceMatcher` — no need to run `fetch_services.py` manually. Data fetching logic lives in `_prepare_context()` (intent classification + all adapter calls, returns result dict without LLM response); `process_query()` calls it then calls `generate_response()`. Both the interactive CLI and the `/query/stream` endpoint call `_prepare_context()` directly and stream tokens from `generate_response_stream()`; the `/query/stream` endpoint additionally sends a `metadata` SSE event first. `process_query()` (blocking, used only by the `/query` REST endpoint) calls `_prepare_context()` then `generate_response()`.
 
 **`intent_classifier/intent_classifier.py`** — Layer 1 LLM (AWS Bedrock). Outputs primary/secondary/enriched intents, entities (`service` only — no `time_range`/`comparison_range`), data_sources list, and UTC millisecond timestamps. Timestamp resolution calls `timestamp.py` with the raw user query string. Config files: `intent_categories.yaml` (9 active categories: STATE, TREND, PATTERN, CAUSE, IMPACT, ACTION, PREDICT, OPTIMIZE, EVIDENCE; 28 active intents), `enrichment_rules.yaml` (maps primary intents → additional enriched intents to auto-add), `data_sources.yaml`.
 
@@ -211,6 +212,11 @@ OPENSEARCH_PAGE_SIZE=5000
 
 **Import errors on startup:** Ensure `__init__.py` files exist in `intent_classifier/`, `context_adapter/`, and `utils/`.
 
+**`config.py` fails silently with TypeError on missing env vars:** All numeric vars use `int(os.getenv(...))` with no fallback. If any required key is absent from `.env`, you'll get `TypeError: int() argument must be a string... not 'NoneType'` at import time — not a `KeyError` or a helpful message. If startup crashes immediately, check that every key listed in the Environment Variables section exists in `.env`.
+
+**`services.yaml` is auto-generated and not committed:** It is produced at every `SLOOrchestrator.__init__()` call and is not in `.gitignore`, so `git status` will show it as untracked. Do not commit it — its content changes with `APP_ID` and the ClickHouse data at startup time. Add `services.yaml` to `.gitignore` if the untracked file entry becomes noisy.
+
+**`app.py` hardcodes the backend URL to `http://localhost:8000`:** The `API_URL` constant at the top of `app.py` is not driven by an env var. If the FastAPI server runs on a different host or port, edit that constant directly.
 
 **`start_time`/`end_time` from API are only a fallback:** They are used only when the query contains no time reference (`timestamp source == "fallback"`). If the query mentions any time expression (regex or LLM matched), these fields are ignored regardless of their value. A minimum 2-hour gap is always enforced after resolution by shifting `start_time` backwards (`start = end - 2 hours`) — not forwards — so the query always covers a completed historical window rather than a future one.
 
@@ -219,6 +225,8 @@ OPENSEARCH_PAGE_SIZE=5000
 **`alert_count` via orchestrator uses `project_id` filter only:** `fetch_alerts_for_orchestrator()` sends `[{"id": project_id, "sloTypes": ["ERROR", "RESPONSE"]}]`. The API requires `project_id` (215853) — using only `app_id` (31854) returns 0 results because all alerts are indexed by `sid: project_id`. The `app_id` is retained in the returned query metadata for traceability only. The `__main__` block uses more granular per-service filters for standalone testing only.
 
 **`timestamp.py` LLM fallback must return `{"ambiguous": true}` for time-less queries — not invent a default:** The system prompt in `_parse_with_llm` explicitly instructs the model to return `{"ambiguous": true}` when the query has no time reference, and the parser converts that to `None` so `source` falls through to `'fallback'`. This is load-bearing: if the LLM fabricates a default window (e.g. "last 1 hour") for a time-less query, `source` becomes `'llm'` and `main.py` ignores the API-provided `start_time`/`end_time`, silently overriding the caller. Do not loosen the prompt or remove the `ambiguous` branch in the parser.
+
+**ClickHouse is queried via raw HTTP GET (no Python driver):** `memory_adapter.py`, `infra_adapter.py`, and `fetch_services.py` all send SQL via `requests.get(clickhouse_url, params={"query": sql})` against the ClickHouse HTTP interface. There is no `clickhouse-driver` or `clickhouse-connect` package — don't add one. The HTTP interface returns TSV or JSON depending on the `FORMAT` clause in the SQL.
 
 **`clickhouse_infra` is a distinct data source key from `clickhouse`:** `memory_adapter.py` and `infra_adapter.py` hit two different tables and are gated independently. The orchestrator fires `infra_adapter` only when the classifier emits `clickhouse_infra` in `data_sources` (currently only the `INFRA_METRICS` intent does). Don't reuse the `clickhouse` key for new ClickHouse adapters — add a new keyed source instead so adapters stay independently gated.
 
