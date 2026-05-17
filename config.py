@@ -9,6 +9,11 @@ from dotenv import load_dotenv
 # Load .env from the project root (the directory where this file lives)
 load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env'))
 
+# ── LLM Provider ──────────────────────────────────────────────────────────────
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "bedrock")       # "bedrock" | "ollama"
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3")
+
 # ── AWS / Bedrock ──────────────────────────────────────────────────────────────
 AWS_REGION = os.getenv("AWS_REGION")
 AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")

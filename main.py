@@ -640,7 +640,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="SLO Advisor API",
-    description="Internal API for conversational SLO queries powered by AWS Bedrock",
+    description="Internal API for conversational SLO queries powered by a configurable LLM backend (AWS Bedrock or Ollama).",
     version="1.0.0",
     lifespan=lifespan,
 )

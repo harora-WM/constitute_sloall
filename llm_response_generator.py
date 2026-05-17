@@ -5,10 +5,9 @@ Uses AWS Bedrock Claude Sonnet 4.6 to analyze SLO data and answer user queries
 """
 
 import json
-import boto3
 from typing import Dict, Any, Generator
-from botocore.exceptions import ClientError
 import config
+from llm_client import LLMClient
 
 
 class LLMResponseGenerator:
@@ -17,21 +16,10 @@ class LLMResponseGenerator:
     """
 
     def __init__(self):
-        """Initialize the LLM response generator with AWS Bedrock client"""
-        # AWS Bedrock configuration
-        self.region = config.AWS_REGION
-        self.model_id = config.BEDROCK_MODEL_ID
+        self.llm = LLMClient()
+        self.model_id = self.llm.model_id
         self.max_tokens = config.RESPONSE_MAX_TOKENS
         self.temperature = config.RESPONSE_TEMPERATURE
-
-        # Initialize Bedrock client
-        self.bedrock_runtime = boto3.client(
-            service_name='bedrock-runtime',
-            region_name=self.region,
-            aws_access_key_id=config.AWS_ACCESS_KEY_ID,
-            aws_secret_access_key=config.AWS_SECRET_ACCESS_KEY
-        )
-
         self.system_prompt = self._build_system_prompt()
 
 
@@ -504,38 +492,14 @@ Tailor your response structure to the user's intent:
     ) -> Generator[str, None, None]:
         """
         Stream a conversational response from orchestrator output.
-        Yields raw text chunks as they arrive from Bedrock.
+        Yields raw text chunks as they arrive.
         Call _sanitize_response on the accumulated text after iteration.
         """
-        try:
-            prompt = self._build_prompt(user_query, orchestrator_output)
-            print("\n💬 Generating conversational response (streaming)...")
-
-            request_body = {
-                "anthropic_version": "bedrock-2023-05-31",
-                "max_tokens": self.max_tokens,
-                "temperature": self.temperature,
-                "system": self.system_prompt,
-                "messages": [{"role": "user", "content": prompt}]
-            }
-
-            response = self.bedrock_runtime.invoke_model_with_response_stream(
-                modelId=self.model_id,
-                body=json.dumps(request_body)
-            )
-
-            for event in response["body"]:
-                chunk = event.get("chunk")
-                if chunk:
-                    data = json.loads(chunk["bytes"].decode())
-                    if data.get("type") == "content_block_delta":
-                        delta = data.get("delta", {})
-                        if delta.get("type") == "text_delta":
-                            yield delta.get("text", "")
-
-        except ClientError as e:
-            print(f"AWS Bedrock Error: {e}")
-            raise
+        prompt = self._build_prompt(user_query, orchestrator_output)
+        print("\n💬 Generating conversational response (streaming)...")
+        yield from self.llm.stream(
+            self.system_prompt, prompt, self.max_tokens, self.temperature
+        )
 
     def _sanitize_response(self, text: str) -> str:
         """
@@ -724,48 +688,9 @@ Generate your response now:"""
         return prompt
 
     def _call_bedrock(self, prompt: str) -> str:
-        """
-        Call AWS Bedrock Claude to generate the response
-
-        Args:
-            prompt: The complete prompt with user query and data
-
-        Returns:
-            Generated natural language response
-        """
-        try:
-            # Prepare request body
-            request_body = {
-                "anthropic_version": "bedrock-2023-05-31",
-                "max_tokens": self.max_tokens,
-                "temperature": self.temperature,
-                "system": self.system_prompt,
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ]
-            }
-
-            # Invoke the model
-            response = self.bedrock_runtime.invoke_model(
-                modelId=self.model_id,
-                body=json.dumps(request_body)
-            )
-
-            # Parse response
-            response_body = json.loads(response['body'].read())
-            assistant_message = response_body['content'][0]['text']
-
-            return assistant_message.strip()
-
-        except ClientError as e:
-            print(f"AWS Bedrock Error: {e}")
-            raise
-        except Exception as e:
-            print(f"Unexpected error calling Bedrock: {e}")
-            raise
+        return self.llm.complete(
+            self.system_prompt, prompt, self.max_tokens, self.temperature
+        ).strip()
 
 
 # -------------------------------------------------------------------

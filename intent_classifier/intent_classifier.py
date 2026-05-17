@@ -9,12 +9,11 @@ import sys
 import json
 import yaml
 from typing import Dict, List, Set, Any
-import boto3
-from botocore.exceptions import ClientError
 from timestamp import TimestampResolver
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
+from llm_client import LLMClient
 
 
 class IntentClassifier:
@@ -33,16 +32,8 @@ class IntentClassifier:
         # Initialize timestamp resolver
         self.timestamp_resolver = TimestampResolver()
 
-        # Initialize AWS Bedrock client
-        self.bedrock_runtime = boto3.client(
-            service_name='bedrock-runtime',
-            region_name=config.AWS_REGION,
-            aws_access_key_id=config.AWS_ACCESS_KEY_ID,
-            aws_secret_access_key=config.AWS_SECRET_ACCESS_KEY
-        )
-
-        # Model configuration
-        self.model_id = config.BEDROCK_MODEL_ID
+        # LLM client (provider determined by config.LLM_PROVIDER)
+        self.llm = LLMClient()
         self.max_tokens = config.MAX_TOKENS
         self.temperature = config.TEMPERATURE
 
@@ -132,52 +123,21 @@ Return ONLY the JSON object. No additional text.
 
         return prompt
 
-    def _call_bedrock(self, user_query: str) -> Dict[str, Any]:
-        """Call AWS Bedrock to classify intent and extract entities"""
+    def _call_llm(self, user_query: str) -> Dict[str, Any]:
+        """Call the configured LLM to classify intent and extract entities."""
+        assistant_message = ""
         try:
-            # Prepare the request body for Claude Sonnet 4.6
-            request_body = {
-                "anthropic_version": "bedrock-2023-05-31",
-                "max_tokens": self.max_tokens,
-                "temperature": self.temperature,
-                "system": self.system_prompt,
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": user_query
-                    }
-                ]
-            }
+            assistant_message = self.llm.complete(
+                self.system_prompt, user_query, self.max_tokens, self.temperature
+            ).strip()
 
-            # Invoke the model
-            response = self.bedrock_runtime.invoke_model(
-                modelId=self.model_id,
-                body=json.dumps(request_body)
-            )
-
-            # Parse the response
-            response_body = json.loads(response['body'].read())
-            assistant_message = response_body['content'][0]['text']
-
-            # Extract JSON object from response
-            # Handle cases where LLM might add extra text
-            assistant_message = assistant_message.strip()
-
-            # Find JSON object in the response
             start_idx = assistant_message.find('{')
             end_idx = assistant_message.rfind('}') + 1
 
             if start_idx != -1 and end_idx > start_idx:
-                json_str = assistant_message[start_idx:end_idx]
-                result = json.loads(json_str)
-                return result
-            else:
-                # Fallback: try to parse the entire response
-                return json.loads(assistant_message)
+                return json.loads(assistant_message[start_idx:end_idx])
+            return json.loads(assistant_message)
 
-        except ClientError as e:
-            print(f"AWS Bedrock Error: {e}")
-            return {}
         except json.JSONDecodeError as e:
             print(f"JSON Parsing Error: {e}")
             print(f"LLM Response: {assistant_message}")
@@ -226,7 +186,7 @@ Return ONLY the JSON object. No additional text.
             - timestamp_resolution: Resolved UTC timestamps and index granularity
         """
         # Get classification from LLM
-        llm_result = self._call_bedrock(user_query)
+        llm_result = self._call_llm(user_query)
 
         if not llm_result or 'primary_intent' not in llm_result:
             return {

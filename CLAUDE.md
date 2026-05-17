@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-A **Conversational SLO (Service Level Objective) Manager** using AWS Bedrock Claude Sonnet 4.6 in a **two-layer LLM architecture**: intent classification → multi-source data fetching → conversational response generation.
+A **Conversational SLO (Service Level Objective) Manager** using a **two-layer LLM architecture**: intent classification → multi-source data fetching → conversational response generation. LLM provider is switchable between AWS Bedrock (Claude Sonnet 4.6) and Ollama (local models) via `LLM_PROVIDER` in `.env`.
 
 ## Development Commands
 
@@ -27,6 +27,9 @@ streamlit run app.py
 python fetch_services.py
 
 # Integration test: SLOOrchestrator end-to-end + infra_adapter standalone (requires live credentials)
+# WARNING: test was written before alerts_count/clickhouse_infra were disabled; it asserts those
+# sources appear in the output. Expect assertion errors or missing keys — update assertions to
+# match the currently active sources: java_stats_api, clickhouse, change_impact.
 python tests/test_new_adapters.py
 
 # Test components individually
@@ -53,7 +56,7 @@ cd context_adapter && python infra_adapter.py
 | POST | `/query` | Submit a natural language SLO query. Body: `QueryRequest` (`query`, `app_id`, `project_id`, optional `start_time`, `end_time` in Unix epoch ms). `start_time`/`end_time` are only used when the query contains no time reference; if the query mentions a time expression they are ignored entirely. A minimum 2-hour gap is always enforced. `index` is always auto-calculated (`>3 days → DAILY`, else `HOURLY`). Typical latency: 8–15s (two LLM calls + sequential data fetches). |
 | POST | `/query/stream` | Same parameters as `/query`. Returns a Server-Sent Events stream. Event types: `metadata` (once, after data fetching — contains classification, time_resolution, data_sources_used, data), `token` (one per LLM text chunk), `done` (final sanitized full_text), `error` (on failure). Used by the Streamlit UI; the plain `/query` endpoint remains for other clients. |
 
-**Do NOT run FastAPI with more than 1 worker** — boto3 clients are stateful and multiple workers cause Bedrock rate limit issues. Always use `--workers 1`.
+**Do NOT run FastAPI with more than 1 worker** — when using Bedrock, boto3 clients are stateful and multiple workers cause rate limit issues. Always use `--workers 1`.
 
 ## Architecture
 
@@ -80,11 +83,13 @@ User Query
 
 ### Core Components
 
+**`llm_client.py`** — Unified LLM abstraction layer. All three LLM call sites (`intent_classifier.py`, `timestamp.py`, `llm_response_generator.py`) import and instantiate this instead of calling provider SDKs directly. Exposes two methods: `complete(system, user, max_tokens, temperature) → str` (blocking) and `stream(...) → Generator[str]` (streaming). Internally branches on `config.LLM_PROVIDER`: `"bedrock"` uses boto3 with the Anthropic message format; `"ollama"` posts to `{OLLAMA_BASE_URL}/api/chat` using `requests`. To add a new provider, add a branch in `__init__`, `_complete_<provider>`, and `_stream_<provider>` — nothing else needs to change. `self.model_id` is set on the instance so callers can include it in response metadata without importing config directly.
+
 **`config.py`** — Single source of truth for all configuration. Loads `.env` using its own `__file__` path (works from any working directory). All modules — `context_adapter/`, `intent_classifier/`, and `main.py` — import this instead of calling `os.getenv()` directly.
 
 **`main.py`** — Contains `SLOOrchestrator` class, `main()` interactive CLI, and the FastAPI `app` instance. `app_id` and `project_id` come from `config.APP_ID` / `config.PROJECT_ID` for CLI; for API they come from the request body (defaulting to the same config values if not supplied). On every startup, `SLOOrchestrator.__init__()` automatically refreshes `services.yaml` by calling `fetch_services.py` functions before initializing `ServiceMatcher` — no need to run `fetch_services.py` manually. Data fetching logic lives in `_prepare_context()` (intent classification + all adapter calls, returns result dict without LLM response); `process_query()` calls it then calls `generate_response()`. Both the interactive CLI and the `/query/stream` endpoint call `_prepare_context()` directly and stream tokens from `generate_response_stream()`; the `/query/stream` endpoint additionally sends a `metadata` SSE event first. `process_query()` (blocking, used only by the `/query` REST endpoint) calls `_prepare_context()` then `generate_response()`.
 
-**`intent_classifier/intent_classifier.py`** — Layer 1 LLM (AWS Bedrock). Outputs primary/secondary/enriched intents, entities (`service` only — no `time_range`/`comparison_range`), data_sources list, and UTC millisecond timestamps. Timestamp resolution calls `timestamp.py` with the raw user query string. Config files: `intent_categories.yaml` (9 active categories: STATE, TREND, PATTERN, CAUSE, IMPACT, ACTION, PREDICT, OPTIMIZE, EVIDENCE; 28 active intents), `enrichment_rules.yaml` (maps primary intents → additional enriched intents to auto-add), `data_sources.yaml`.
+**`intent_classifier/intent_classifier.py`** — Layer 1 LLM (via `llm_client.py`). Outputs primary/secondary/enriched intents, entities (`service` only — no `time_range`/`comparison_range`), data_sources list, and UTC millisecond timestamps. Timestamp resolution calls `timestamp.py` with the raw user query string. Config files: `intent_categories.yaml` (9 active categories: STATE, TREND, PATTERN, CAUSE, IMPACT, ACTION, PREDICT, OPTIMIZE, EVIDENCE; 28 active intents), `enrichment_rules.yaml` (maps primary intents → additional enriched intents to auto-add), `data_sources.yaml`.
 
 Key active enrichment chains that indirectly trigger data sources:
 - `ROOT_CAUSE_SINGLE` / `ROOT_CAUSE_MULTI` → enriches `UNDERCURRENTS_TREND` + `MITIGATION_STEPS`; also directly carries `change_impact` in their own data_sources
@@ -105,7 +110,7 @@ All enrichments are resolved in a single flattened pass by `intent_classifier.py
 
 **`context_adapter/infra_adapter.py`** — Fetches host-level infrastructure metrics (CPU / memory / disk) from ClickHouse table `metrics.infra_data` (collected by SolarWinds and Zabbix). Only triggered when `clickhouse_infra` appears in `data_sources` (i.e. when the classifier routes to the `INFRA_METRICS` intent). Filters by `app_id`, `project_id`, and the resolved `record_time` window. Granularity is **per host**, not per service — there is no service_id/service_name column. Entry point: `fetch_infra_for_orchestrator(app_id, project_id, start_time, end_time)`. Records are one row per `(host_name, metric_type, record_time)`; `metric_type` values are `{solarwinds,zabbix}_{cpu,memory,disk}`.
 
-**`llm_response_generator.py`** — Layer 2 LLM (AWS Bedrock). Receives complete orchestrator output and generates a conversational response as "SLO Advisor". System prompt (v3) defines interpretation rules for all 6 data source types: real-time SLO metrics, historical behavior patterns, alert/incident history, deployment change impact, host-level infra metrics, and intent classification. Includes a pattern→action cheat sheet (sudden drop, drift, seasonal, chronic, volume-driven, etc.). Has two call paths: `generate_response()` (blocking, returns full text) and `generate_response_stream()` (generator, yields raw text chunks via `invoke_model_with_response_stream`). The streaming endpoint accumulates chunks and applies `_sanitize_response()` to the full text at the end, so sanitization is not skipped.
+**`llm_response_generator.py`** — Layer 2 LLM (via `llm_client.py`). Receives complete orchestrator output and generates a conversational response as "SLO Advisor". System prompt (v3) is ~5,700 tokens — defines interpretation rules for all 6 data source types: real-time SLO metrics, historical behavior patterns, alert/incident history, deployment change impact, host-level infra metrics, and intent classification. Includes a pattern→action cheat sheet (sudden drop, drift, seasonal, chronic, volume-driven, etc.). Has two call paths: `generate_response()` (blocking, returns full text) and `generate_response_stream()` (generator, yields raw text chunks). The streaming endpoint accumulates chunks and applies `_sanitize_response()` to the full text at the end, so sanitization is not skipped.
 
 Internal system names (ClickHouse, Java Stats API, etc.) are intentionally hidden from users at two levels: (1) the system prompt has an "ABSOLUTE OUTPUT RULE" at the top forbidding their use, and all section headers use user-friendly descriptions; (2) `_sanitize_response()` is a post-processing step applied to every LLM response that regex-replaces any leaked names as a deterministic safety net. **If you add a new data source that introduces a new technology name the LLM might mention, add it to the replacement patterns in `_sanitize_response()`.**
 
@@ -143,6 +148,11 @@ Two system prompt sections are defined but excluded from the active prompt: `_SE
 All configuration lives in `.env` and is loaded centrally by `config.py`. No credentials are hardcoded in any adapter.
 
 ```bash
+# LLM Provider — switch between "bedrock" and "ollama" without touching any other file
+LLM_PROVIDER=bedrock
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=llama3
+
 # AWS Bedrock
 AWS_REGION=ap-south-1
 AWS_ACCESS_KEY_ID=your_key
@@ -208,7 +218,7 @@ OPENSEARCH_PAGE_SIZE=5000
 
 **Memory adapter returns 0 records:** Verify ClickHouse connectivity and that `app_id = 31854` has data. (Note: services.yaml is not required for memory adapter — it's used for service name matching only.)
 
-**Intent classifier fails:** Must run from project root. Verify AWS credentials and `BEDROCK_MODEL_ID` in `.env`.
+**Intent classifier fails:** Must run from project root. Verify LLM provider credentials in `.env` — for Bedrock: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `BEDROCK_MODEL_ID`; for Ollama: `OLLAMA_BASE_URL` reachable and `OLLAMA_MODEL` pulled.
 
 **Import errors on startup:** Ensure `__init__.py` files exist in `intent_classifier/`, `context_adapter/`, and `utils/`.
 
@@ -232,6 +242,10 @@ OPENSEARCH_PAGE_SIZE=5000
 
 **`infra_data` has no service column:** Only `host_name` is available. If a user asks for infra on a specific service, the adapter still returns all hosts for the app/project — there is no host→service mapping in the codebase. The Layer 2 system prompt is aware of this; don't add fake service filtering in the adapter.
 
+**Keycloak tokens are fetched fresh per adapter call — no shared cache:** `java_stats.py` and `change_pre_post.py` each call the Keycloak token endpoint independently at call time using `WM_USERNAME`/`WM_PASSWORD`. There is no token-caching layer or shared session. If Keycloak is slow or rate-limiting, each adapter incurs the full auth round-trip. When adding a new Keycloak-authenticated adapter, follow the same pattern (call `get_access_token()` inline); don't attempt to pass a token from the orchestrator — there's no mechanism for it.
+
+**`slo_result_*.json` auto-exports are covered by `.gitignore`:** Every `process_query()` call writes `slo_result_{start_timestamp}.json` to the project root. These are suppressed by the `*.json` wildcard already in `.gitignore`, so they will not show up in `git status`.
+
 **`_fetch_memory_adapter` re-resolves service_id internally:** `main.py` already resolves `service_id` near the top of `process_query()` but then calls `_fetch_memory_adapter(service_name=service, ...)` passing the raw name. The method re-resolves via `ServiceMatcher` internally. This double resolution is harmless but means you'll see two "Resolving service name" log lines per query when a service is mentioned. Do not assume `service_id` has been pre-resolved when working on `_fetch_memory_adapter`.
 
 **Adding a new adapter:** At the top of the new file, use the `sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))` pattern before `import config` (see existing adapters). All adapters expose two functions: a low-level `fetch_xxx_data(...)` that returns raw records, and an orchestrator-facing `fetch_xxx_for_orchestrator(...)` that returns a structured envelope. The orchestrator only calls the `_for_orchestrator` wrapper. Add any new URLs/credentials to `.env` and `config.py`, then wire the entry-point function into `SLOOrchestrator._prepare_context()` in `main.py` (not `process_query()` — the data-fetch logic now lives in `_prepare_context`).
@@ -244,6 +258,10 @@ The envelope format varies by adapter — there is no single canonical schema. A
 - `change_pre_post`: `{data_source, latest_change, eb_deviations, response_deviations, stats}` — fully custom
 
 The Layer 2 system prompt documents how to interpret each of these structures.
+
+**Ollama thinking models (e.g. `qwen3:8b`) consume `num_predict` budget on internal reasoning:** The thinking tokens are hidden from the response but count against the token limit. `llm_client.py` compensates by adding 2000 tokens of headroom (`_ollama_num_predict` returns `max_tokens + 2000`). If you switch to another thinking model and see empty responses, increase this buffer. Non-thinking models are unaffected.
+
+**`llama3` is not viable for Layer 2 response generation:** Its 8,192-token context window is too small — the Layer 2 system prompt alone is ~5,700 tokens, leaving fewer than 2,500 tokens for adapter data and the response. Use `qwen3:8b` (40,960 tokens) or `ministral-3:8b` for Ollama. `llama3` is acceptable only for Layer 1 intent classification.
 
 **`ARCHITECTURE.md` is partially outdated:** It references 76 behavior patterns and "128 total services"; it also says "No tests" but `tests/test_new_adapters.py` exists. Both service and pattern counts vary by app_id/environment. Treat `CLAUDE.md` as the authoritative reference; `ARCHITECTURE.md` documents an earlier state of the system.
 
